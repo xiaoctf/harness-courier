@@ -15,6 +15,7 @@ TOP_LEVEL = {
     ".gitattributes",
     ".gitignore",
     "README.md",
+    "README.zh-CN.md",
     "LICENSE",
     "THIRD_PARTY_NOTICES.md",
     "CONTRIBUTING.md",
