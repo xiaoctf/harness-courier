@@ -1,0 +1,9 @@
+/runtime/
+/downloads/
+/docs/
+/backups/
+/data/
+/*.exe
+/__pycache__/
+/verification/fixture-*
+/verification/tools.json

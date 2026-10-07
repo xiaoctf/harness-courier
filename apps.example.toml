@@ -1,0 +1,10 @@
+# Copy to apps.toml and set your real installation paths.
+# Both the launcher and CDP sender read the same file.
+# Alternatively set HARNESS_BRIDGE_APPS to its absolute path.
+[apps.kimi]
+executable = "C:/Program Files/Kimi Code/Kimi Code.exe"
+port = 49371
+
+[apps.zcode]
+executable = "C:/Program Files/ZCode/ZCode.exe"
+port = 49372

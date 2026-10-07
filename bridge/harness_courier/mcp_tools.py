@@ -1,0 +1,182 @@
+"""Harness-scoped tool schemas and dispatch, independent of stdio framing."""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from typing import Any
+
+from dispatch_runner import tool_annotations
+
+from .errors import BridgeError
+from .mailbox import Mailbox
+from .tool_names import LEGACY_TO_CANONICAL, legacy_name
+
+
+def schema(properties: dict, required: tuple | list = ()) -> dict:
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": list(required),
+        "additionalProperties": False,
+    }
+
+
+STRING = {"type": "string"}
+
+
+def tool_specs(harness: str) -> list[dict]:
+    """Expose only the controller or receiver tools for this harness."""
+    common = [
+        (
+            "bridge_peers",
+            "List registered actual desktop sessions and persistent alias bindings.",
+            schema({}),
+        ),
+        (
+            "bridge_status",
+            "Read a message's true receiver ACK/result, not just GUI input success.",
+            schema({"message_id": STRING}, ["message_id"]),
+        ),
+        (
+            "bridge_wait",
+            "Wait up to 55 seconds for a target ACK/result. A timeout is not failure.",
+            schema(
+                {
+                    "message_id": STRING,
+                    "timeout": {"type": "number", "minimum": 0, "maximum": 55},
+                    "until": {"enum": ["acknowledged", "completed"]},
+                },
+                ["message_id"],
+            ),
+        ),
+    ]
+    if harness == "codex":
+        common += [
+            (
+                "bridge_bind",
+                "Bind an alias to an explicitly chosen real session ID. Do not guess recipients.",
+                schema(
+                    {
+                        "alias": STRING,
+                        "harness": {"enum": ["kimi", "zcode"]},
+                        "session_id": STRING,
+                        "title": STRING,
+                        "replace": {"type": "boolean"},
+                    },
+                    ["alias", "harness", "session_id"],
+                ),
+            ),
+            (
+                "bridge_send",
+                "Send to a bound desktop chat and attempt desktop wake. Receipts arrive separately.",
+                schema(
+                    {
+                        "alias": STRING,
+                        "body": STRING,
+                        "sender_session_id": STRING,
+                        "dispatch": {"type": "boolean"},
+                    },
+                    ["alias", "body"],
+                ),
+            ),
+            (
+                "bridge_dispatch",
+                "Retry a queued message or a delivered message whose desktop wake failed; never retry after ACK.",
+                schema({"message_id": STRING}, ["message_id"]),
+            ),
+        ]
+    else:
+        common += [
+            (
+                "bridge_inbox",
+                "Read messages for YOUR exact session ID given by the receiver Hook. Never use another chat's ID.",
+                schema(
+                    {"caller_session_id": STRING, "message_id": STRING},
+                    ["caller_session_id"],
+                ),
+            ),
+            (
+                "bridge_ack",
+                "Confirm that you have read this message in your bound chat.",
+                schema(
+                    {"caller_session_id": STRING, "message_id": STRING},
+                    ["caller_session_id", "message_id"],
+                ),
+            ),
+            (
+                "bridge_reply",
+                "Return your result or failure to the sending Codex chat's message record.",
+                schema(
+                    {
+                        "caller_session_id": STRING,
+                        "message_id": STRING,
+                        "body": STRING,
+                        "result_kind": {"enum": ["completed", "failed"]},
+                    },
+                    ["caller_session_id", "message_id", "body"],
+                ),
+            ),
+        ]
+    canonical = [
+        {
+            "name": LEGACY_TO_CANONICAL[n],
+            "description": d,
+            "inputSchema": s,
+            "annotations": tool_annotations(n),
+        }
+        for n, d, s in common
+    ]
+    aliases = [
+        {
+            **tool,
+            "name": old,
+            "description": f"Legacy alias for {tool['name']}. {tool['description']}",
+        }
+        for tool, (old, _, _) in zip(canonical, common, strict=True)
+    ]
+    return canonical + aliases
+
+
+def invoke(
+    box: Mailbox,
+    harness: str,
+    name: str,
+    arguments: Any,
+    *,
+    dispatch_handler: Callable[[str], dict] | None = None,
+) -> Any:
+    """Validate the tool surface before routing; never mutate caller arguments."""
+    spec = next((t for t in tool_specs(harness) if t["name"] == name), None)
+    if spec is None:
+        raise BridgeError("Unknown or unavailable tool for this harness")
+    fields = spec["inputSchema"]
+    if (
+        not isinstance(arguments, dict)
+        or set(arguments) - set(fields["properties"])
+        or set(fields["required"]) - set(arguments)
+    ):
+        raise BridgeError("Invalid tool arguments")
+    name = legacy_name(name)
+    direct = {
+        "bridge_peers": box.peers,
+        "bridge_status": box.status,
+        "bridge_wait": box.wait,
+        "bridge_bind": box.bind,
+        "bridge_dispatch": dispatch_handler or box.dispatch,
+    }
+    if name in direct:
+        return direct[name](**arguments)
+    args = dict(arguments)
+    if name == "bridge_send":
+        should_dispatch = args.pop("dispatch", True)
+        if dispatch_handler is None or not should_dispatch:
+            return box.send(sender_harness=harness, dispatch=should_dispatch, **args)
+        message = box.send(sender_harness=harness, dispatch=False, **args)
+        return dispatch_handler(message["id"])
+    session_id = args.pop("caller_session_id")
+    receiver = {
+        "bridge_inbox": box.receive,
+        "bridge_ack": box.acknowledge,
+        "bridge_reply": box.reply,
+    }
+    return receiver[name](harness, session_id, **args)

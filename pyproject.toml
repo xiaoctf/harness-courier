@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=77.0.3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "harness-courier"
+version = "0.1.0"
+description = "Session-addressed local mailbox for Windows desktop coding harnesses"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
+requires-python = ">=3.11"
+dependencies = ["psutil>=5.9", "websocket-client>=1.6"]
+
+[project.optional-dependencies]
+dev = ["ruff>=0.9", "build>=1.2"]
+
+[project.scripts]
+harness-courier = "harness_courier.cli:main"
+harness-courier-start = "harness_courier.launcher:main"
+harness-bridge = "harness_bridge.cli:main"
+harness-bridge-start = "harness_bridge.launcher:main"
+
+[tool.setuptools]
+package-dir = {"" = "bridge"}
+packages = ["harness_courier", "harness_bridge"]
+py-modules = ["bridge", "cdp_delivery", "cdp_transport", "cu_client", "desktop_delivery",
+              "dispatch_background", "mcp_dispatch", "dispatch_runner", "install_integrations", "receiver_hook", "setup_bridge", "start_background"]
+
+[tool.setuptools.package-data]
+harness_courier = ["composer_guard.js"]
+harness_bridge = ["composer.js"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
