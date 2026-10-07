@@ -8,7 +8,7 @@ Use Windows and Python 3.11 or later. Install development dependencies with `pyt
 python -m ruff check .
 python -m ruff format --check .
 python -m unittest discover -s bridge -p "test_*.py" -q
-python -m build --wheel --no-isolation
+python -m build --wheel
 ```
 
 Tests must use temporary databases, fake application paths/listeners or isolated browser fixtures. Do not send probe tasks to business chats or modify global app configuration as part of tests.

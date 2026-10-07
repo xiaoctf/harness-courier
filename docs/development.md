@@ -39,7 +39,7 @@ CDP 派发阶段依次为：目标与投递日志保护、选择 renderer、校�
 python -m ruff check .
 python -m ruff format --check .
 python -m unittest discover -s bridge -p "test_*.py" -q
-python -m build --wheel --no-isolation
+python -m build --wheel
 ```
 
 可选实际 DOM 验证需要已安装的 Chrome。夹具当前按 `verify_cdp_fixture.py` 的 `CHROME` 常量定位它；运行前可调整该测试路径。浏览器使用独立临时 profile 和 headless 模式，不使用用户现有浏览器 profile，也不操作真实 Kimi/ZCode 会话：
