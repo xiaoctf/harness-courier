@@ -192,6 +192,8 @@ class Mailbox:
         sender_harness: str = "codex",
         sender_session_id: str = "controller",
         dispatch: bool = False,
+        *,
+        allow_offline: bool = False,
     ) -> dict[str, Any]:
         """Snapshot the binding and queue text; optionally submit a desktop wake."""
         valid_id(sender_session_id, "sender_session_id")
@@ -216,7 +218,11 @@ class Mailbox:
                 "SELECT * FROM peers WHERE harness=? AND session_id=?",
                 (target["harness"], target["session_id"]),
             ).fetchone()
-            if not peer or not peer["online"] or not peer["guard_ready"]:
+            if (
+                not peer
+                or not peer["guard_ready"]
+                or (not peer["online"] and not allow_offline)
+            ):
                 raise BridgeError(
                     "Bound session is offline or lacks the receiver guard"
                 )
@@ -257,6 +263,11 @@ class Mailbox:
             "completed": None,
             "failed": None,
         }[row["state"]]
+        from dispatch_queue import queue_status
+
+        dispatch_queue = queue_status(self, message_id)
+        if dispatch_queue is not None:
+            result["dispatch_queue"] = dispatch_queue
         return result
 
     def receive(
@@ -384,9 +395,15 @@ class Mailbox:
         return self.status(message_id)
 
     def dispatch(
-        self, message_id: str, *, allow_busy_navigation: bool = False
+        self,
+        message_id: str,
+        *,
+        allow_busy_navigation: bool = False,
+        priority: bool = False,
     ) -> dict[str, Any]:
         """Attempt a wake without promoting mailbox delivery or ACK state."""
+        if type(allow_busy_navigation) is not bool or type(priority) is not bool:
+            raise BridgeError("Delivery options must be booleans")
         message = self.status(message_id)
         # SessionStart may deliver Hook context before the composer loads.
         # An explicit retry can still wake that chat if GUI delivery failed;
@@ -404,20 +421,44 @@ class Mailbox:
             raise BridgeError(
                 "Binding changed; queued message retains its original target"
             )
-        from desktop_delivery import deliver_wake
+
+        def guard():
+            fresh = self.status(message_id)
+            current_binding = self.binding(message["alias"])
+            if (
+                current_binding["harness"],
+                current_binding["session_id"],
+                current_binding["revision"],
+            ) != (
+                message["harness"],
+                message["session_id"],
+                message["binding_revision"],
+            ):
+                raise BridgeError("Binding changed while waiting for dispatch")
+            return fresh["state"] in ("queued", "delivered")
 
         try:
-            if allow_busy_navigation:
+            if allow_busy_navigation or priority:
                 from cdp_transport import deliver_background
 
                 delivery = deliver_background(
-                    target, message_id, allow_busy_navigation=True
+                    target,
+                    message_id,
+                    allow_busy_navigation=allow_busy_navigation,
+                    priority=priority,
+                    dispatch_guard=guard,
                 )
             else:
-                delivery = deliver_wake(target, message_id)
+                from desktop_delivery import deliver_wake
+
+                delivery = deliver_wake(target, message_id, dispatch_guard=guard)
             error = None
         except Exception as exc:
-            delivery = {"submitted": False, "reason": str(exc)}
+            delivery = {
+                "submitted": False,
+                "reason": str(exc),
+                "retry_safe": getattr(exc, "retry_safe", False),
+            }
             error = str(exc)[:1000]
         with self.connect() as db:
             db.execute(

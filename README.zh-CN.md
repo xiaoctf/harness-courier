@@ -91,6 +91,7 @@ py -3 -m venv .venv
 | `bridge/harness_courier/launcher.py` | 后台启动、只读检查、登录日志 |
 | `bridge/harness_courier/composer_guard.js` | 当前会话和输入框的 DOM 保护 |
 | `bridge/dispatch_runner.py` | MCP 内的固定子进程派发与准确工具标注 |
+| `bridge/dispatch_queue.py` / `dispatch_worker.py` | 持久发送队列、有限重试与单 worker 派发 |
 | `bridge/cdp_transport.py` | 选定 renderer、提交、确认和投递日志 |
 | `bridge/install_integrations.py` | MCP 与接收 Hook 的安装预览、幂等写入 |
 | `bridge/receiver_hook.py` | 接收事件、真实身份和消息上下文 |
@@ -105,3 +106,7 @@ py -3 -m venv .venv
 Cua Driver 来自 [trycua/cua](https://github.com/trycua/cua)，是外部依赖；分发相应版本时需保留其许可与第三方声明。本仓库没有打包它的二进制。
 
 依赖和第三方许可边界见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)，贡献检查见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
+当前源码增加持久队列、有限重试、有时限的锁等待、忙碌聊天切换及原生插队，包含 147 项回归。发送异步受理后查询 `dispatch_queue` 和原 ID 的真实回执；真实多项目并发及运行中插队消费仍待验收。旧 `v0.1.0-preview` Release 下载包不包含此次升级，请使用当前 `main` 源码；每次提交的实际 CI 结果见 [Actions](https://github.com/xiaoctf/harness-courier/actions)。见 [派发与插队](docs/dispatch-and-priority.md)。
+
+派发默认原生插队并允许切换忙碌聊天；需要普通排队时显式设置 `priority=false`，草稿与身份保护仍生效。

@@ -82,6 +82,8 @@ class McpDispatchTests(unittest.TestCase):
                 "--db",
                 str(self.box.path.resolve()),
                 self.message["id"],
+                "--allow-busy-navigation",
+                "--priority",
             ],
         )
         self.assertIs(child.call_args.kwargs["shell"], False)
@@ -93,7 +95,7 @@ class McpDispatchTests(unittest.TestCase):
         arguments = {"alias": "fixture-peer", "body": "new fixture message"}
         with patch(
             "harness_bridge.mcp.dispatch_fresh",
-            side_effect=lambda box, mid: box.status(mid),
+            side_effect=lambda box, mid, **options: box.status(mid),
         ) as dispatch:
             result = call_tool(
                 self.box, "codex", {"name": "bridge_send", "arguments": arguments}
@@ -136,7 +138,12 @@ class McpDispatchTests(unittest.TestCase):
                 },
             )
         self.assertFalse(result["isError"])
-        dispatch.assert_called_once_with(self.box, message_id=self.message["id"])
+        dispatch.assert_called_once_with(
+            self.box,
+            message_id=self.message["id"],
+            allow_busy_navigation=True,
+            priority=True,
+        )
         self.assertEqual(len(self.box.receive("kimi", "permissions-fixture")), 1)
 
     def test_ack_and_terminal_messages_never_spawn(self):
@@ -255,8 +262,26 @@ class McpDispatchTests(unittest.TestCase):
         sent = json.loads(response["content"][0]["text"])
         self.assertNotEqual(sent["id"], self.message["id"])
         self.assertEqual(sent["state"], "queued")
-        self.assertTrue(sent["dispatch_error"])
-        self.assertFalse(sent["desktop_delivery"]["submitted"])
+        self.assertIn(
+            sent["dispatch_queue"]["state"], {"pending", "working", "held", "submitted"}
+        )
+        self.assertIsNone(sent["desktop_delivery"]["submitted"])
+        # Terminate only the worker spawned for this temporary DB, not any app.
+        import psutil
+
+        pid = sent["dispatch_queue"]["worker_pid"]
+        if pid:
+            try:
+                worker = psutil.Process(pid)
+                command = worker.cmdline()
+                self.assertIn(str(self.box.path.resolve()), command)
+                self.assertTrue(
+                    any(Path(arg).name == "dispatch_worker.py" for arg in command)
+                )
+                worker.terminate()
+                worker.wait(timeout=5)
+            except psutil.NoSuchProcess:
+                pass
         self.assertEqual(self.box.status(sent["id"])["body"], "stdio dispatch fixture")
 
 

@@ -34,13 +34,14 @@ function(request) {
     matches, sid: sessionId, editor_count: unique.length,
     draft_empty: draft === '', marker_present: payloadMatches,
   };
+  const stops = all('button.stop, button[data-testid="v4-stop"], button[data-testid="chat-stop-button"]');
+  result.generating = stops.some(button => !button.disabled && button.getAttribute('aria-disabled') !== 'true');
   if (request.op === 'observe') return result;
 
   if (request.op === 'select' || request.op === 'select_authorized_busy_navigation') {
     if (!editor) return {...result, error: 'composer_unavailable_or_ambiguous'};
     if (draft !== '' || hasAttachments) return {...result, error: 'existing_draft'};
     // A normal delivery must not switch away from a chat that is generating.
-    const stops = all('button.stop, button[data-testid="v4-stop"], button[data-testid="chat-stop-button"]');
     if (request.op === 'select' && stops.some(button =>
       !button.disabled && button.getAttribute('aria-disabled') !== 'true')) {
       return {...result, error: 'current_conversation_generating'};
@@ -58,6 +59,28 @@ function(request) {
   if (!matches || !editor) return {...result, error: 'session_identity_or_composer_mismatch'};
   if (!composer) return {...result, error: 'composer_scope_unverified'};
   if (hasAttachments) return {...result, error: 'existing_attachment_draft'};
+  if (request.op === 'priority_queue_ready' || request.op === 'priority_queue_submit') {
+    if (request.harness !== 'zcode') return {...result, error: 'priority_queue_unsupported'};
+    if (draft !== '') return {...result, error: 'existing_draft'};
+    // Queue metadata only. Never search transcript text or choose a queue index.
+    const root = editor.closest('[data-session-id]');
+    const rows = all('li[data-queue-item-id]', root).filter(row =>
+      row.querySelector('span[title]')?.getAttribute('title') === request.marker);
+    if (rows.length > 1) return {...result, error: 'priority_queue_ambiguous'};
+    if (rows.length === 0) return {...result, ready: false};
+    const row = rows[0];
+    const buttons = all('button[data-testid^="v4-queue-item-send-now"]', row).filter(button =>
+      button.getAttribute('data-queue-item-id') === row.getAttribute('data-queue-item-id'));
+    if (row.getAttribute('data-dispatch-state') !== 'queued' || buttons.length !== 1 ||
+        buttons[0].disabled || buttons[0].getAttribute('aria-disabled') === 'true') {
+      return {...result, error: 'priority_queue_not_actionable'};
+    }
+    if (request.op === 'priority_queue_submit') {
+      buttons[0].click();
+      return {...result, priority_requested: true};
+    }
+    return {...result, ready: true};
+  }
   if (request.op === 'focus') {
     if (draft !== '') return {...result, error: 'existing_draft'};
     // Document focus only; never BrowserWindow.focus or Page.bringToFront.

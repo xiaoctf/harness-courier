@@ -157,8 +157,8 @@ class NamingCompatibilityTests(unittest.TestCase):
                             "codex",
                             sender("bridge_dispatch"),
                             {"message_id": sent["id"]},
-                            dispatch_handler=lambda message_id: dispatch_fresh(
-                                self.box, message_id
+                            dispatch_handler=lambda message_id, **options: (
+                                dispatch_fresh(self.box, message_id)
                             ),
                         )
                     child.assert_not_called()

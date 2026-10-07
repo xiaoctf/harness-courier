@@ -100,21 +100,22 @@ class CdpClient:
             "Input.dispatchKeyEvent",
         ):
             raise DriverError("CDP method outside delivery surface")
-        if method == "Input.dispatchKeyEvent" and params not in (
-            {
-                "type": "keyDown",
-                "key": "Enter",
-                "code": "Enter",
-                "windowsVirtualKeyCode": 13,
-            },
-            {
-                "type": "keyUp",
-                "key": "Enter",
-                "code": "Enter",
-                "windowsVirtualKeyCode": 13,
-            },
-        ):
-            raise DriverError("Only the verified composer Enter submission is admitted")
+        if method == "Input.dispatchKeyEvent":
+            allowed = [
+                {
+                    "type": kind,
+                    "key": "Enter",
+                    "code": "Enter",
+                    "windowsVirtualKeyCode": 13,
+                    **extra,
+                }
+                for kind in ("keyDown", "keyUp")
+                for extra in ({}, {"modifiers": 2})
+            ]
+            if params not in allowed:
+                raise DriverError(
+                    "Only the verified composer Enter or Ctrl+Enter is admitted"
+                )
         self.sequence += 1
         self.socket.send(
             json.dumps({"id": self.sequence, "method": method, "params": params})
@@ -266,7 +267,7 @@ def _confirm_composer_clear(client, binding, marker):
         time.sleep(0.1)
 
 
-def deliver_background(
+def _deliver_background(
     binding,
     message_id,
     client_factory=CdpClient,
@@ -276,11 +277,16 @@ def deliver_background(
     recovery_body=None,
     resume_staged=False,
     allow_busy_navigation=False,
+    priority=False,
+    dispatch_guard=None,
+    before_input=None,
 ):
     if binding["harness"] not in APPS or not re.fullmatch(
         r"msg_[a-f0-9]{32}", message_id
     ):
         raise DriverError("Invalid background recipient or message ID")
+    if type(priority) is not bool or (priority and recovery_sha is not None):
+        raise DriverError("Invalid priority option or priority combined with recovery")
     marker = f"[HARNESS_BRIDGE_WAKE:{message_id}]"
     if recovery_body is not None:
         if (
@@ -298,6 +304,8 @@ def deliver_background(
     from desktop_delivery import desktop_lock
 
     with desktop_lock():
+        if dispatch_guard is not None and not dispatch_guard():
+            return {"submitted": False, "skipped": "receiver_already_acknowledged"}
         journal = ROOT / "data" / "background-delivery" / (message_id + ".json")
         recovering = recovery_sha is not None
         original_sha = None
@@ -369,6 +377,17 @@ def deliver_background(
             _attach_bound_session(
                 client, binding, marker, allow_busy_navigation=allow_busy_navigation
             )
+            if dispatch_guard is not None and not dispatch_guard():
+                return {"submitted": False, "skipped": "receiver_already_acknowledged"}
+            priority_state = (
+                client.evaluate("observe", binding, marker) if priority else {}
+            )
+            if priority and (
+                not priority_state.get("matches")
+                or priority_state.get("editor_count") != 1
+            ):
+                raise DriverError("Priority target identity changed")
+            priority_active = priority and priority_state.get("generating") is True
             # Normal delivery sends only a wake; explicit recovery may use task text.
             if staged:
                 # No new typing or draft mutation: only the exact, unsent
@@ -393,6 +412,21 @@ def deliver_background(
                     f.flush()
                     os.fsync(f.fileno())
             if not staged:
+                if before_input:
+                    before_input()
+                if not recovering:
+                    journal.parent.mkdir(parents=True, exist_ok=True)
+                    record = {
+                        "message_id": message_id,
+                        "harness": binding["harness"],
+                        "sid": binding["session_id"],
+                        "phase": "input_attempt",
+                        "at": time.time(),
+                    }
+                    with journal.open("x", encoding="utf-8") as handle:
+                        json.dump(record, handle)
+                        handle.flush()
+                        os.fsync(handle.fileno())
                 client.call("Input.insertText", {"text": marker})
             _await_composer_ready(client, binding, marker)
             journal.parent.mkdir(parents=True, exist_ok=True)
@@ -407,10 +441,26 @@ def deliver_background(
                 saved["original_journal_sha256"] = original_sha
             journal.write_text(json.dumps(saved), encoding="utf-8")
             # A lost response after this point must never cause an automatic resubmit.
-            _submit_composer(client, binding, marker)
+            if priority_active and binding["harness"] == "kimi":
+                from priority_delivery import steer_kimi
+
+                steer_kimi(client, binding, marker)
+            else:
+                _submit_composer(client, binding, marker)
             # A click is not application acceptance. Require the verified
             # composer to clear, while still leaving receipt proof to the Hook.
             _confirm_composer_clear(client, binding, marker)
+            priority_action = "idle_normal_send" if priority else None
+            if priority_active:
+                priority_action = "kimi_steer_current_draft"
+                if binding["harness"] == "zcode":
+                    from priority_delivery import promote_zcode
+
+                    saved["phase"] = "priority_attempt"
+                    journal.write_text(json.dumps(saved), encoding="utf-8")
+                    promote_zcode(client, binding, marker)
+                    priority_action = "zcode_send_queued_now"
+            saved["priority_action"] = priority_action
             saved["phase"] = "submitted"
             temporary = journal.with_suffix(".tmp")
             temporary.write_text(json.dumps(saved), encoding="utf-8")
@@ -423,7 +473,26 @@ def deliver_background(
                 "payload_mode": "same_id_task_body"
                 if recovery_body is not None
                 else "wake_marker",
+                "priority_requested": priority,
+                "priority_action": priority_action,
                 "composer_cleared": True,
                 "recovery": recovering,
                 "note": "Receiver Hook and agent ACK/result prove actual receipt",
             }
+
+
+def deliver_background(binding, message_id, client_factory=CdpClient, **options):
+    """Tag failures before typing; the queue separately checks the failure reason."""
+    input_started = False
+
+    def mark_input():
+        nonlocal input_started
+        input_started = True
+
+    try:
+        return _deliver_background(
+            binding, message_id, client_factory, before_input=mark_input, **options
+        )
+    except Exception as exc:
+        exc.retry_safe = not input_started
+        raise

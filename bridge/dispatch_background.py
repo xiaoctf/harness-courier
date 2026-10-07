@@ -69,8 +69,9 @@ def main():
     )
     parser.add_argument(
         "--allow-busy-navigation",
-        action="store_true",
-        help="Explicit user authorization to select the bound chat without stopping other generation",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Select the bound chat while another generates; false preserves the busy navigation guard",
     )
     parser.add_argument(
         "--recover-unreceived",
@@ -88,10 +89,16 @@ def main():
         action="store_true",
         help="Complete exact unsent recovery draft only; requires task-body and reserved journal",
     )
+    parser.add_argument(
+        "--priority",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Use native priority delivery for this exact message; may interrupt the bound target",
+    )
     args = parser.parse_args()
     try:
         if args.recover_unreceived:
-            if args.allow_busy_navigation:
+            if args.allow_busy_navigation or args.priority:
                 raise BridgeError(
                     "Busy navigation option is not supported with journal recovery"
                 )
@@ -107,13 +114,26 @@ def main():
         else:
             if args.expected_journal_sha256 or args.task_body or args.resume_staged:
                 raise BridgeError("Journal SHA is only accepted with explicit recovery")
-            result = Mailbox(args.db).dispatch(
-                args.message_id, allow_busy_navigation=args.allow_busy_navigation
+            from dispatch_queue import enqueue
+
+            result = enqueue(
+                Mailbox(args.db),
+                args.message_id,
+                allow_busy_navigation=args.allow_busy_navigation is not False,
+                priority=args.priority is not False,
             )
-    except (BridgeError, DriverError, OSError) as exc:
+
+    except (BridgeError, DriverError, ValueError, OSError) as exc:
         print(json.dumps({"error": str(exc)}, ensure_ascii=False))
         return 1
     print(json.dumps(result, ensure_ascii=False, indent=2))
+    if not args.recover_unreceived and "dispatch_queue" in result:
+        return (
+            0
+            if result["dispatch_queue"]["state"]
+            in ("pending", "working", "submitted", "cancelled")
+            else 1
+        )
     return 1 if result.get("dispatch_error") else 0
 
 

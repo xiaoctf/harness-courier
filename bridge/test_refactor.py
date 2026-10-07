@@ -180,7 +180,7 @@ class AdapterTests(unittest.TestCase):
     def test_tool_routing_preserves_input_and_default_dispatch(self):
         args = {"alias": "fixture-kimi", "body": "fixture text"}
         with patch(
-            "desktop_delivery.deliver_wake", return_value={"submitted": True}
+            "cdp_transport.deliver_background", return_value={"submitted": True}
         ) as deliver:
             sent = invoke(self.box, "codex", "bridge_send", args)
         deliver.assert_called_once()

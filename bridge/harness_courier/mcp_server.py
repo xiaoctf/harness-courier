@@ -75,6 +75,10 @@ def serve(
     output_stream: TextIO | None = None,
 ) -> None:
     """Serve until EOF, isolating malformed frames from subsequent requests."""
+    if harness == "codex":
+        from dispatch_queue import ensure_worker
+
+        ensure_worker(box)
     source = input_stream if input_stream is not None else sys.stdin
     sink = output_stream if output_stream is not None else sys.stdout
     for raw in source:

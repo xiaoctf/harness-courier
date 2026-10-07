@@ -16,29 +16,36 @@ APPS = {"kimi": "Kimi Code", "zcode": "ZCode"}
 
 
 @contextlib.contextmanager
-def desktop_lock():
-    if __import__("os").name != "nt":
+def desktop_lock(timeout=20):
+    """Wait briefly across processes; retain the legacy shared lock boundary."""
+    import os
+    import time
+
+    if os.name != "nt":
         raise DriverError("Desktop delivery requires native Windows")
     import msvcrt
 
     path = ROOT / "data" / "desktop.lock"
     path.parent.mkdir(exist_ok=True)
-    with path.open("a+b") as f:
-        f.seek(0)
-        f.write(b"0")
-        f.flush()
-        f.seek(0)
-        try:
-            msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
-        except OSError as exc:
-            raise DriverError(
-                "Another bridge delivery is controlling the desktop"
-            ) from exc
+    # Windows permits locking a byte past EOF. Do not append on each contender.
+    with path.open("a+b") as handle:
+        deadline = time.monotonic() + timeout
+        while True:
+            handle.seek(0)
+            try:
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                break
+            except OSError as exc:
+                if time.monotonic() >= deadline:
+                    raise DriverError(
+                        "Desktop delivery wait timed out; retry the original message ID"
+                    ) from exc
+                time.sleep(min(0.1, max(0, deadline - time.monotonic())))
         try:
             yield
         finally:
-            f.seek(0)
-            msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
 
 
 def tree_lines(state):
@@ -174,9 +181,11 @@ def input_is_empty(state, index):
     return True
 
 
-def deliver_wake(binding, message_id, client_factory=None):
+def deliver_wake(binding, message_id, client_factory=None, *, dispatch_guard=None):
     # New processes use only the background Electron transport. No foreground
     # fallback, even when the endpoint is absent or the composer is unavailable.
     from cdp_delivery import CdpClient, deliver_background
 
-    return deliver_background(binding, message_id, client_factory or CdpClient)
+    return deliver_background(
+        binding, message_id, client_factory or CdpClient, dispatch_guard=dispatch_guard
+    )

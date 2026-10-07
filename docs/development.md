@@ -10,7 +10,9 @@ flowchart LR
     MCP[stdio MCP] --> Tools
     Hook[接收 Hook] --> Mailbox[SQLite Mailbox]
     Tools --> Mailbox
-    Mailbox --> CDP[CDP 后台派发]
+    Mailbox --> Outbox[持久发送队列]
+    Outbox --> Worker[有限后台 worker]
+    Worker --> CDP[CDP 后台派发]
     CDP --> DOM[composer_guard.js 会话与草稿保护]
     Registry[应用配置与端口归属] --> CDP
     Registry --> Launcher[共享启动器]
@@ -20,7 +22,9 @@ Mailbox 不解析 JSON-RPC，也不负责桌面选取逻辑。协议层不写 SQ
 
 SQLite schema、状态名称、工具名称与原有参数保持兼容。MCP 仍使用现有的本地 stdio 协议实现；本轮没有更换 SDK 或迁移协议版本。
 
-CDP 派发阶段依次为：目标与投递日志保护、选择 renderer、校验输入框、输入唤醒、等待就绪、记录 `submit_attempt`、提交、确认输入框清空、记录 `submitted`。其中 `submitted` 仅证明传输事件；实际接收仍由 Hook/ACK/result 证明。
+CDP 派发阶段依次为：目标与投递日志保护、选择 renderer、校验输入框、同步记录 `input_attempt`、输入唤醒、等待就绪、记录 `submit_attempt`、提交、确认输入框清空、记录 `submitted`。其中 `submitted` 仅证明传输事件；实际接收仍由 Hook/ACK/result 证明。
+
+持久队列是新增 `dispatch_jobs` 表；不修改旧消息状态语义，不把 mailbox-only 历史记录导入队列。worker 用 OS 文件锁互斥，实际 UI 投递仍持共享桌面锁。队列测试使用临时数据库和注入的 fixture delegate，包含真实两个 Windows 子进程的争用；不连接业务聊天。
 
 ## 修改约定
 
@@ -82,3 +86,9 @@ python bridge/verify_cdp_fixture.py
 公共包名、MCP 工具和实现模块已改为 Courier，旧名称保留为兼容入口，见 [命名与兼容性](naming-and-compatibility.md)。新增 11 项命名回归，总计 104 项，覆盖模块身份、角色范围、参数与标注一致、新旧工具混用、原数据库与唤醒协议、环境变量优先级，以及安装器幂等和冲突拒绝。命名验证回执为 `bridge/verification/naming-migration-checks.json`，发布时不包含它。
 
 此轮真实浏览器夹具验证新 `composer_guard.js` 加载路径，独立 wheel 安装验证新旧包与 CLI；Cua WPF 源码只编译，不启动或注入真实桌面输入。真实 Kimi/ZCode 往返、客户端重载和自动审批行为仍未复验。
+
+## 持久发送队列增量
+
+本地队列补丁共 147 项回归通过，Ruff 检查、格式检查及 wheel/sdist 构建通过。覆盖真实双 Windows worker 争用、优先级与同级 FIFO、临时错误退避、重试上限、崩溃暂停、ACK 防重放、改绑定拒绝、输入前后失败分类、显式安全重试和离线注册聊天入队。隔离 headless fixture 验证精确原生优先入口，不能代替真实桌面运行中插队消费。
+
+机器现用的 legacy 单文件版本按相同逻辑安装并通过 109 项回归；生产应用路径和既有数据库、Hook、绑定保留。实际业务聊天未用于回归。本增量包含在当前 `main` 源码；每次提交的远端验证以 Actions 为准，旧预览版的 104 项 CI 记录不代表此增量已经在远端运行。

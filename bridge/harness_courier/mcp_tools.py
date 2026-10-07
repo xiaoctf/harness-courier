@@ -75,6 +75,16 @@ def tool_specs(harness: str) -> list[dict]:
                         "body": STRING,
                         "sender_session_id": STRING,
                         "dispatch": {"type": "boolean"},
+                        "allow_busy_navigation": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": "Allow selecting the bound chat while another chat is generating; preserves drafts.",
+                        },
+                        "priority": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": "Native priority delivery; may interrupt the bound target. Requires authorization.",
+                        },
                     },
                     ["alias", "body"],
                 ),
@@ -82,7 +92,14 @@ def tool_specs(harness: str) -> list[dict]:
             (
                 "bridge_dispatch",
                 "Retry a queued message or a delivered message whose desktop wake failed; never retry after ACK.",
-                schema({"message_id": STRING}, ["message_id"]),
+                schema(
+                    {
+                        "message_id": STRING,
+                        "allow_busy_navigation": {"type": "boolean", "default": True},
+                        "priority": {"type": "boolean", "default": True},
+                    },
+                    ["message_id"],
+                ),
             ),
         ]
     else:
@@ -165,14 +182,35 @@ def invoke(
         "bridge_dispatch": dispatch_handler or box.dispatch,
     }
     if name in direct:
+        if name == "bridge_dispatch":
+            arguments = {"allow_busy_navigation": True, "priority": True, **arguments}
         return direct[name](**arguments)
     args = dict(arguments)
     if name == "bridge_send":
         should_dispatch = args.pop("dispatch", True)
-        if dispatch_handler is None or not should_dispatch:
-            return box.send(sender_harness=harness, dispatch=should_dispatch, **args)
-        message = box.send(sender_harness=harness, dispatch=False, **args)
-        return dispatch_handler(message["id"])
+        options = {
+            key: args.pop(key)
+            for key in ("allow_busy_navigation", "priority")
+            if key in args
+        }
+        if type(should_dispatch) is not bool or any(
+            type(v) is not bool for v in options.values()
+        ):
+            raise BridgeError("Delivery options must be booleans")
+        if not should_dispatch and any(options.values()):
+            raise BridgeError(
+                "Priority/navigation requires dispatch=true; no message queued"
+            )
+        message = box.send(
+            sender_harness=harness,
+            dispatch=False,
+            allow_offline=should_dispatch,
+            **args,
+        )
+        if not should_dispatch:
+            return message
+        options = {"allow_busy_navigation": True, "priority": True, **options}
+        return (dispatch_handler or box.dispatch)(message["id"], **options)
     session_id = args.pop("caller_session_id")
     receiver = {
         "bridge_inbox": box.receive,

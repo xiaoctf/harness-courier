@@ -62,7 +62,9 @@ def _dispatch_failure(
     }
 
 
-def dispatch_fresh(box: Any, message_id: str) -> dict:
+def dispatch_fresh(
+    box: Any, message_id: str, *, allow_busy_navigation=True, priority=True
+) -> dict:
     """Perform bounded background dispatch inside the MCP integration process.
 
     A fresh child loads current disk code and preserves the old receipt/journal
@@ -72,6 +74,8 @@ def dispatch_fresh(box: Any, message_id: str) -> dict:
         r"msg_[a-f0-9]{32}", message_id
     ):
         raise ValueError("Invalid bridge message ID")
+    if type(allow_busy_navigation) is not bool or type(priority) is not bool:
+        raise ValueError("Delivery options must be booleans")
     current = box.status(message_id)
     if current["state"] != "queued" and not (
         current["state"] == "delivered" and current["dispatch_error"]
@@ -84,6 +88,12 @@ def dispatch_fresh(box: Any, message_id: str) -> dict:
         str(box.path.resolve()),
         message_id,
     ]
+    command.append(
+        "--allow-busy-navigation"
+        if allow_busy_navigation
+        else "--no-allow-busy-navigation"
+    )
+    command.append("--priority" if priority else "--no-priority")
     try:
         completed = subprocess.run(
             command,

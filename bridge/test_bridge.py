@@ -135,7 +135,7 @@ class BridgeTests(unittest.TestCase):
     def test_retry_after_sessionstart_delivery_and_editor_loading_failure(self):
         mid = self.queued()
 
-        def loading_failure(*args):
+        def loading_failure(*args, **kwargs):
             self.box.receive("kimi", "kimi-A", mid)
             raise RuntimeError("editor still loading")
 

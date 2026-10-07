@@ -11,7 +11,9 @@
 
 用 courier_send_message(alias=目标别名, body=任务卡, dispatch=true) 发送。保存返回的 id，后续以 message_id 传同一个值。正文不超过 6000 个字符。仅在发送方会话身份真实可验证时传 sender_session_id，不编造原 Codex 聊天 ID。
 
-用 courier_wait_for_receipt 或 courier_get_message_status 查询同一 ID。wait timeout 为 0..55 秒，until 为 acknowledged 或 completed；超时返回当前状态，不等于失败。入队、桌面 submitted、delivered、ACK、实际动作、产物与验收分别判断。completed 回执不自动等于父目标完成。
+本机用户已批准默认插队与跨聊天切换，普通发送默认 priority=true、allow_busy_navigation=true；仍保护草稿和真实绑定。需要排队时显式 priority=false，其他环境先确认该默认行为在其授权范围内。原生插队请求不等于真实消费，需继续查同 ID 的 ACK 和实际执行。提交不确定时停止自动重试，不对其他队列项操作。
+
+用 courier_wait_for_receipt 或 courier_get_message_status 查询同一 ID。dispatch_queue.pending/working 表示后台 worker 已接管，不重复手动派发；held/exhausted 要先看 last_error 和原投递日志。wait timeout 为 0..55 秒，until 为 acknowledged 或 completed；超时返回当前状态，不等于失败。异步受理、桌面 submitted、delivered、ACK、实际动作、产物与验收分别判断。completed 回执不自动等于父目标完成。
 
 失败或超时先查原 ID。未 ACK 不盲目重新 courier_send_message；仅在普通派发确实失败、目标和草稿安全且允许重试时，用 courier_dispatch_message 重试原 ID。结果不确定或日志保护拒绝时先检查，不自行恢复或强制导航。已 ACK 不重复派发。宿主审批拒绝时说明原因，不切换完全访问绕过。
 

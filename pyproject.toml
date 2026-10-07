@@ -25,7 +25,7 @@ harness-bridge-start = "harness_bridge.launcher:main"
 package-dir = {"" = "bridge"}
 packages = ["harness_courier", "harness_bridge"]
 py-modules = ["bridge", "cdp_delivery", "cdp_transport", "cu_client", "desktop_delivery",
-              "dispatch_background", "mcp_dispatch", "dispatch_runner", "install_integrations", "receiver_hook", "setup_bridge", "start_background"]
+              "dispatch_background", "dispatch_queue", "dispatch_worker", "priority_delivery", "mcp_dispatch", "dispatch_runner", "install_integrations", "receiver_hook", "setup_bridge", "start_background"]
 
 [tool.setuptools.package-data]
 harness_courier = ["composer_guard.js"]

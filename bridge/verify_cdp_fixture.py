@@ -47,7 +47,15 @@ HTML = b"""<!doctype html><meta charset="utf-8"><title>Harness background fixtur
  window.fixtureSubmitted=[];
  editor.addEventListener('input',()=>{send.disabled=!editor.textContent.trim();});
  send.addEventListener('click',()=>{window.fixtureSubmitted.push(editor.textContent);editor.textContent='';send.disabled=true;});
- editor.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();send.click();}});
+ window.fixtureSteered=[];window.fixturePromoted=[];window.fixtureMode='normal';
+ function queueWake(text,id){
+  const row=document.createElement('li');row.dataset.queueItemId=id;row.dataset.dispatchState='queued';
+  const span=document.createElement('span');span.title=text;span.textContent=text;row.appendChild(span);
+  const button=document.createElement('button');button.dataset.testid='v4-queue-item-send-now:'+id;button.dataset.queueItemId=id;
+  button.addEventListener('click',()=>{window.fixturePromoted.push(text);row.remove();});row.appendChild(button);document.querySelector('.composer').appendChild(row);
+ }
+ editor.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();if(e.ctrlKey){window.fixtureSteered.push(editor.textContent);editor.textContent='';send.disabled=true;}else send.click();}});
+ send.addEventListener('click',()=>{if(window.fixtureMode==='queue')queueWake(window.fixtureSubmitted.at(-1),'new-wake');});
  document.querySelector('.se').addEventListener('click',()=>history.pushState({},'', '/sessions/session_fixture'));
  document.querySelector('li').addEventListener('click',()=>document.querySelector('.composer').setAttribute('data-session-id','sess_fixture'));
 </script>"""
@@ -203,6 +211,90 @@ def main():
                         == after["foreground"],
                     }
                 )
+            # Exercise native priority paths and exact queue identity in the DOM fixture.
+            client.call(
+                "Runtime.evaluate",
+                {
+                    "expression": "const busyStop=document.createElement('button');busyStop.className='stop';document.body.appendChild(busyStop);queueWake('OLD_QUEUE_KEEP','old-queue');window.fixtureMode='normal'",
+                    "returnByValue": True,
+                },
+            )
+            kimi_binding = {
+                "harness": "kimi",
+                "session_id": "session_fixture",
+                "title": "Fixture",
+            }
+            kimi_mid = "msg_" + "c" * 32
+            priority_kimi = cdp.deliver_background(
+                kimi_binding, kimi_mid, FixtureClient, priority=True
+            )
+            client.call(
+                "Runtime.evaluate",
+                {"expression": "window.fixtureMode='queue'", "returnByValue": True},
+            )
+            zcode_binding = {
+                "harness": "zcode",
+                "session_id": "sess_fixture",
+                "title": "Fixture",
+            }
+            zcode_mid = "msg_" + "d" * 32
+            priority_zcode = cdp.deliver_background(
+                zcode_binding, zcode_mid, FixtureClient, priority=True
+            )
+            actual = client.call(
+                "Runtime.evaluate",
+                {
+                    "expression": "JSON.stringify({steered:window.fixtureSteered,promoted:window.fixturePromoted,old:!!document.querySelector('li[data-queue-item-id=old-queue]')})",
+                    "returnByValue": True,
+                },
+            )
+            priority_observed = json.loads(actual["result"]["value"])
+            assert priority_observed == {
+                "steered": [f"[HARNESS_BRIDGE_WAKE:{kimi_mid}]"],
+                "promoted": [f"[HARNESS_BRIDGE_WAKE:{zcode_mid}]"],
+                "old": True,
+            }
+            assert priority_kimi["priority_action"] == "kimi_steer_current_draft"
+            assert priority_zcode["priority_action"] == "zcode_send_queued_now"
+            # Wrong ID/draft and duplicate queue markers must not promote anything.
+            marker = "[HARNESS_BRIDGE_WAKE:msg_" + "e" * 32 + "]"
+            client.call(
+                "Runtime.evaluate",
+                {
+                    "expression": f"queueWake({json.dumps(marker)},'duplicate-1');queueWake({json.dumps(marker)},'duplicate-2')",
+                    "returnByValue": True,
+                },
+            )
+            assert (
+                client.evaluate("priority_queue_submit", zcode_binding, marker)["error"]
+                == "priority_queue_ambiguous"
+            )
+            assert (
+                client.evaluate(
+                    "priority_queue_submit",
+                    {**zcode_binding, "session_id": "wrong_session"},
+                    marker,
+                )["error"]
+                == "session_identity_or_composer_mismatch"
+            )
+            client.call(
+                "Runtime.evaluate",
+                {
+                    "expression": "document.querySelector('[contenteditable]').textContent='KEEP';document.querySelector('button.stop').remove();window.fixtureMode='normal'",
+                    "returnByValue": True,
+                },
+            )
+            assert (
+                client.evaluate("priority_queue_submit", zcode_binding, marker)["error"]
+                == "existing_draft"
+            )
+            client.call(
+                "Runtime.evaluate",
+                {
+                    "expression": "document.querySelector('[contenteditable]').textContent=''",
+                    "returnByValue": True,
+                },
+            )
             # A generating chat must block normal selection before a row is clicked.
             client.call(
                 "Runtime.evaluate",
@@ -291,6 +383,9 @@ def main():
         output = {
             "scope": "isolated headless CDP/DOM fixture; real desktop harnesses unverified",
             "results": results,
+            "actual_dom_native_priority": True,
+            "actual_dom_priority_old_queue_preserved": True,
+            "actual_dom_priority_ambiguity_guard": True,
             "actual_dom_draft_guard": True,
             "actual_dom_busy_selection_guard": True,
             "actual_dom_attachment_guard": True,

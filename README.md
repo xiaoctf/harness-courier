@@ -152,10 +152,10 @@ Adapt the templates to the project and place them in the client's supported inst
 
 ## Limitations
 
-`0.1.0` is a preview. Windows CI covers Python 3.11 and 3.13, with 104 regression tests, Ruff and package builds. Automated tests and isolated browser fixtures do not establish compatibility with every desktop application version.
+`0.1.0` is a preview. The current source has 147 regression tests. Windows CI is configured for Python 3.11 and 3.13, Ruff and package builds; see [Actions](https://github.com/xiaoctf/harness-courier/actions) for each commit's actual result. Automated tests and isolated browser fixtures do not establish compatibility with every desktop application version.
 
 - Receipts are stored in message records and queried by the sender. There is no complete scheduler that automatically wakes the original Codex chat with a result.
-- Desktop dispatch has a global lock, but a complete concurrent multi-project sending queue is not implemented.
+- Explicit dispatch requests use a durable outbox and one delivery worker per mailbox. Priority jobs go first; jobs of the same priority use FIFO order when ready. Transient pre-input failures have bounded retries, while drafts and uncertain submissions are held for inspection. Real multi-project desktop concurrency still needs acceptance testing.
 - The published copy still needs real Kimi/ZCode roundtrip, Cua input, desktop reload and automatic-approval verification in target environments.
 
 Messages, databases, logs, local configuration, backups and third-party binaries are excluded from the source distribution.
@@ -165,3 +165,7 @@ Messages, databases, logs, local configuration, backups and third-party binaries
 Install development tools with `python -m pip install -e ".[dev]"`. See [CONTRIBUTING.md](CONTRIBUTING.md) for checks and [SECURITY.md](SECURITY.md) for security reporting.
 
 Harness Courier's own code is [MIT licensed](LICENSE). External dependencies retain their own licenses; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+The current source adds a durable outbox, bounded retries, lock waiting, busy-chat navigation and native priority delivery. Dispatch acceptance is asynchronous: inspect `dispatch_queue` and wait for the original message ID's receiver receipts. Real desktop priority consumption remains unverified. The earlier `v0.1.0-preview` release archive does not include this upgrade; use the current `main` source. See [dispatch and priority](docs/dispatch-and-priority.md) (Chinese).
+
+Dispatch defaults to native priority and busy-chat navigation. Set `priority=false` to queue normally; existing draft and identity guards remain in force.
