@@ -12,7 +12,13 @@ from cu_client import DriverError
 
 
 def steer_kimi(client, binding, marker):
-    """Ctrl+Enter targets the current draft; Ctrl+S can steer an old queue head."""
+    """Try current-draft priority even when an earlier busy probe was false.
+
+    The native handler evaluates activity at key delivery time. On idle compact
+    composers Ctrl+Enter can be a no-op; return False only after observing the
+    exact unchanged draft, so the caller can submit normally after a fresh guard.
+    A lost key response or changed draft never permits a fallback submit.
+    """
     ready = client.evaluate("keyboard_submit_ready", binding, marker)
     if ready.get("error") or not ready.get("ready"):
         raise DriverError("Priority delivery stopped: composer changed before steer")
@@ -27,9 +33,25 @@ def steer_kimi(client, binding, marker):
                 "modifiers": 2,
             },
         )
+    deadline = time.monotonic() + 1
+    while True:
+        outcome = client.evaluate("observe", binding, marker)
+        if not outcome.get("matches") or outcome.get("editor_count") != 1:
+            raise DriverError(
+                "Priority target changed after shortcut; outcome uncertain"
+            )
+        if outcome.get("draft_empty") is True:
+            return True
+        if outcome.get("marker_present") is not True:
+            raise DriverError(
+                "Priority draft changed after shortcut; outcome uncertain"
+            )
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.05)
 
 
-def promote_zcode(client, binding, marker):
+def promote_zcode(client, binding, marker, *, require_queue=True):
     """Promote exactly this marker, leaving all other queued messages intact."""
     deadline = time.monotonic() + 3
     while True:
@@ -39,6 +61,11 @@ def promote_zcode(client, binding, marker):
         if observation.get("ready"):
             break
         if time.monotonic() >= deadline:
+            if not require_queue:
+                return {
+                    "priority_requested": True,
+                    "action": "zcode_no_matching_queue_observed",
+                }
             raise DriverError("Priority queue item unavailable; no other item promoted")
         time.sleep(0.1)
     result = client.evaluate("priority_queue_submit", binding, marker)

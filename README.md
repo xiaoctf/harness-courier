@@ -14,9 +14,10 @@ Harness Courier binds a readable alias to a real desktop session ID. Messages st
 
 - **Bind a recipient:** address a chosen Kimi Code or ZCode chat by its real session ID, using an alias such as `projectA-kimi-review`.
 - **Send and track:** store messages, bindings and receipts in a shared local SQLite mailbox.
-- **Deliver in the background:** use a verified local CDP endpoint to submit a wake marker. A receiver Hook fetches the message body.
+- **Deliver in the background:** use a verified local CDP endpoint to submit recipient-scoped wake metadata. A receiver Hook or exact-ID receiver inbox call fetches the message body, including when Kimi steering skips a Hook.
 - **Protect active work:** check the target session, drafts, attachments and busy state before sending. Preserve uncertain submission records to guard against duplicate sends.
 - **Return a result:** receivers acknowledge the message and report success or failure through MCP. Codex queries the original message ID.
+- **Observe agent activity:** read current turn state separately from receipts, including supported ZCode background-session metadata and Kimi sidebar observations.
 - **Add optional computer control:** use the Cua background policy and registration helpers separately from message delivery.
 
 This is a community integration for Windows desktop applications. Codex, Kimi Code, ZCode and Cua are independent products; their names do not imply official endorsement.
@@ -111,12 +112,24 @@ The message body is limited to 6,000 characters. Use aliases such as `<project>-
 | `courier_send_message` | Codex | Create a message and optionally dispatch its wake. |
 | `courier_dispatch_message` | Codex | Dispatch an existing message ID when safe to retry. |
 | `courier_get_message_status` | All clients | Read state, ACK and result. |
+| `courier_get_agent_status` | Codex | Read the bound session's current turn and recent progress without navigating or waking it. |
 | `courier_wait_for_receipt` | All clients | Wait up to 55 seconds for ACK or a terminal result. |
 | `courier_receive_messages` | Kimi / ZCode | Fetch messages for the caller's exact session. |
 | `courier_acknowledge_message` | Kimi / ZCode | Confirm the message was read. |
 | `courier_return_result` | Kimi / ZCode | Return a terminal success or failure result. |
 
 Tool discovery also exposes the original `bridge_*` aliases with the same schemas and role restrictions. The old `harness_bridge` imports, CLI commands and environment variables remain supported.
+
+For supervision, use `courier_get_agent_status(alias="project-kimi-review")`.
+Codex receipt queries also include an `agent` observation for the message's
+original recipient. `running`, `idle`, recent `stop_observed`,
+`approval_requested`, `waiting_for_input`, and `unknown` describe different evidence. An idle agent
+with unfinished receipts needs attention; idle never marks a message completed.
+Queries do not switch chats or retry tasks. Supported ZCode versions expose exact-session
+controller state even when the target chat is unselected or absent from the rendered
+sidebar. An old Stop event does not invalidate that current observation.
+See [Agent activity](docs/agent-status.md)
+for Hook loading, freshness and background-job limits.
 
 The MCP server runs a fixed background dispatcher internally, so agents do not need an extra shell command to send a wake. Host approvals still apply; tool annotations describe behavior and do not grant permissions.
 
@@ -152,11 +165,11 @@ Adapt the templates to the project and place them in the client's supported inst
 
 ## Limitations
 
-`0.1.0` is a preview. The current source has 147 regression tests. Windows CI is configured for Python 3.11 and 3.13, Ruff and package builds; see [Actions](https://github.com/xiaoctf/harness-courier/actions) for each commit's actual result. Automated tests and isolated browser fixtures do not establish compatibility with every desktop application version.
+`0.1.0` is a preview. The current source has 185 regression tests. Windows CI is configured for Python 3.11 and 3.13, Ruff and package builds; see [Actions](https://github.com/xiaoctf/harness-courier/actions) for each commit's actual result. Automated tests and isolated browser fixtures do not establish compatibility with every desktop application version.
 
 - Receipts are stored in message records and queried by the sender. There is no complete scheduler that automatically wakes the original Codex chat with a result.
 - Explicit dispatch requests use a durable outbox and one delivery worker per mailbox. Priority jobs go first; jobs of the same priority use FIFO order when ready. Transient pre-input failures have bounded retries, while drafts and uncertain submissions are held for inspection. Real multi-project desktop concurrency still needs acceptance testing.
-- The published copy still needs real Kimi/ZCode roundtrip, Cua input, desktop reload and automatic-approval verification in target environments.
+- Local desktop tests with Kimi Code 1.0.4 and ZCode 3.14.4 verified real receipts, native priority consumption and activity observations from one originating Codex environment. Other versions, simultaneous independent Codex senders, Cua input and host approval behavior still need acceptance testing in target environments.
 
 Messages, databases, logs, local configuration, backups and third-party binaries are excluded from the source distribution.
 
@@ -166,6 +179,6 @@ Install development tools with `python -m pip install -e ".[dev]"`. See [CONTRIB
 
 Harness Courier's own code is [MIT licensed](LICENSE). External dependencies retain their own licenses; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
-The current source adds a durable outbox, bounded retries, lock waiting, busy-chat navigation and native priority delivery. Dispatch acceptance is asynchronous: inspect `dispatch_queue` and wait for the original message ID's receiver receipts. Real desktop priority consumption remains unverified. The earlier `v0.1.0-preview` release archive does not include this upgrade; use the current `main` source. See [dispatch and priority](docs/dispatch-and-priority.md) (Chinese).
+The current source adds a durable outbox, bounded retries, lock waiting, busy-chat navigation, native priority delivery and an optional administrator policy that forces priority. Recipient-scoped wake metadata also supports exact-ID inbox retrieval when native steering skips a receiver Hook. Dispatch acceptance is asynchronous: inspect `dispatch_queue`, the original message ID's receipts and current agent activity. Local desktop validation is bounded to the versions above. The earlier `v0.1.0-preview` release archive does not include these upgrades; use the current `main` source. See [dispatch and priority](docs/dispatch-and-priority.md) (Chinese).
 
-Dispatch defaults to native priority and busy-chat navigation. Set `priority=false` to queue normally; existing draft and identity guards remain in force.
+Dispatch defaults to native priority and busy-chat navigation. Set `priority=false` to queue normally only when the mailbox administrator has not enabled `force_priority`. With that policy enabled, enqueue and delivery override `false`; existing draft and identity guards remain in force.

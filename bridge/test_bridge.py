@@ -522,7 +522,7 @@ class BridgeTests(unittest.TestCase):
         )
         self.assertEqual(new["model"], original["model"])
         self.assertEqual(
-            new["hooks"]["events"]["Stop"], original["hooks"]["events"]["Stop"]
+            new["hooks"]["events"]["Stop"][:1], original["hooks"]["events"]["Stop"]
         )
         self.assertEqual(
             new["mcp"]["servers"]["existing"], original["mcp"]["servers"]["existing"]

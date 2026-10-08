@@ -40,7 +40,14 @@ def call_tool(box: Mailbox, harness: str, params: dict) -> dict:
         failed = False
     except (BridgeError, TypeError, ValueError, OSError) as exc:
         text, failed = str(exc), True
-    return {"content": [{"type": "text", "text": text}], "isError": failed}
+    result = {"content": [{"type": "text", "text": text}], "isError": failed}
+    if (
+        not failed
+        and isinstance(value, dict)
+        and ("turn_state" in value or "agent" in value)
+    ):
+        result["structuredContent"] = value
+    return result
 
 
 def handle_request(box: Mailbox, harness: str, request: Any) -> dict | None:

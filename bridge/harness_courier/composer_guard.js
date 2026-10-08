@@ -25,6 +25,39 @@ function(request) {
   const hasAttachments = !!composer?.querySelector(
     '[data-media-att-id], [data-attachment-id], [data-composer-attachment-remove]');
   const matches = sessionId === request.sid;
+  if (request.op === 'agent_observe') {
+    // Metadata only; never focus/select, inspect transcript text, or expose
+    // the unrelated current conversation ID or draft contents.
+    const root = request.harness === 'kimi' ? composer : editor?.closest('[data-session-id]');
+    const scoped = matches && unique.length === 1 && !!root;
+    const stopButtons = scoped ? all('button.stop, button[data-testid="v4-stop"], button[data-testid="chat-stop-button"]', root) : [];
+    const sendButtons = scoped ? all(request.harness === 'kimi' ? 'button.send' : '[data-testid="chat-send-button"], button[data-testid="v4-composer-send"], button[data-testid$="-send-button"]', root) : [];
+    const verified = scoped && (stopButtons.length > 0 || sendButtons.length === 1);
+    // Kimi 1.0.4's SessionRow renders .ts only for idle, and a spinner only
+    // for running. Exact visible IDs allow observing a background chat without
+    // selecting it. Require the known active-row structure; ambiguous, renamed,
+    // archived or changed markup remains unknown rather than false idle.
+    let sidebar = {verified: false, turn_state: 'unknown'};
+    if (request.harness === 'kimi') {
+      const rows = all('.se[data-session-id]').filter(row => row.getAttribute('data-session-id') === request.sid);
+      const row = rows.length === 1 ? rows[0] : null;
+      const known = row && all('.row .left > .t', row).length === 1 &&
+        all('.act .ha button.pin-btn', row).length === 1 &&
+        all('button.reopen-btn, button.restore-btn', row).length === 0;
+      if (known) {
+        const busy = all('.act .st .ui-spinner', row).length === 1;
+        const idle = all('.act > .ts', row).length === 1 || all('.act .st .unread-dot', row).length === 1;
+        if (busy !== idle) sidebar = {verified: true, turn_state: busy ? 'running' : 'idle'};
+      }
+    }
+    return {
+      activity_probe: true, target_selected: matches, composer_verified: verified,
+      sidebar,
+      generating: verified ? stopButtons.some(button => !button.disabled && button.getAttribute('aria-disabled') !== 'true') : null,
+      draft_present: verified ? draft !== '' || hasAttachments : null,
+      native_queue_count: verified && request.harness === 'zcode' ? all('li[data-queue-item-id]', root).length : null,
+    };
+  }
   const lineEquivalent = (left, right) =>
     typeof left === 'string' && typeof right === 'string' &&
     left.replace(/[\r\n]/g, '') === right.replace(/[\r\n]/g, '');

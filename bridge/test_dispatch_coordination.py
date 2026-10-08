@@ -374,6 +374,78 @@ class PriorityDeliveryTests(unittest.TestCase):
         )
         self.assertEqual(result["priority_action"], "zcode_send_queued_now")
 
+    def test_kimi_uses_priority_shortcut_when_earlier_busy_probe_is_false(self):
+        def evaluate(op, binding, marker):
+            if op == "observe":
+                return {**self.original(op, binding, marker), "generating": False}
+            return self.evaluate(op, binding, marker)
+
+        with patch.object(self.client, "evaluate", side_effect=evaluate):
+            result = cdp.deliver_background(
+                BINDING, MID, lambda h: self.client, priority=True
+            )
+        self.assertEqual(result["priority_action"], "kimi_priority_shortcut")
+        self.assertEqual(self.client.commands[1][1]["modifiers"], 2)
+
+    def test_zcode_promotes_actual_queue_despite_false_busy_probe(self):
+        def evaluate(op, binding, marker):
+            if op == "observe":
+                return {**self.original(op, binding, marker), "generating": False}
+            return self.evaluate(op, binding, marker)
+
+        with patch.object(self.client, "evaluate", side_effect=evaluate):
+            result = cdp.deliver_background(
+                {**BINDING, "harness": "zcode"},
+                MID,
+                lambda h: self.client,
+                priority=True,
+            )
+        self.assertEqual(result["priority_action"], "zcode_send_queued_now")
+
+    def test_kimi_idle_shortcut_noop_allows_one_guarded_normal_submit(self):
+        def evaluate(op, binding, marker):
+            if op == "observe":
+                keys = [
+                    args
+                    for method, args in self.client.commands
+                    if method == "Input.dispatchKeyEvent"
+                ]
+                cleared = bool(keys and not keys[-1].get("modifiers"))
+                return {
+                    "matches": True,
+                    "editor_count": 1,
+                    "draft_empty": cleared,
+                    "marker_present": not cleared,
+                    "generating": False,
+                }
+            return self.original(op, binding, marker)
+
+        with patch.object(self.client, "evaluate", side_effect=evaluate):
+            result = cdp.deliver_background(
+                BINDING, MID, lambda h: self.client, priority=True
+            )
+        keys = [
+            args
+            for method, args in self.client.commands
+            if method == "Input.dispatchKeyEvent"
+        ]
+        self.assertEqual([k.get("modifiers", 0) for k in keys], [2, 2, 0, 0])
+        self.assertEqual(
+            result["priority_action"], "kimi_normal_send_after_priority_shortcut_noop"
+        )
+
+    def test_lost_kimi_priority_key_never_falls_back_to_normal_send(self):
+        self.client.drop_submit = True
+        with self.assertRaises(DriverError):
+            self.send()
+        keys = [
+            args
+            for method, args in self.client.commands
+            if method == "Input.dispatchKeyEvent"
+        ]
+        self.assertEqual(len(keys), 1)
+        self.assertEqual(keys[0]["modifiers"], 2)
+
     def test_priority_duplicate_does_not_interrupt_twice(self):
         self.send()
         before = (len(self.client.commands), len(self.ops))
@@ -422,14 +494,14 @@ class PriorityDeliveryTests(unittest.TestCase):
             self.send()
         self.assertEqual(self.client.commands, [])
 
-    def test_idle_priority_uses_normal_send(self):
+    def test_missing_busy_flag_still_attempts_native_priority(self):
         result = cdp.deliver_background(
             BINDING, MID, lambda h: self.client, priority=True
         )
-        self.assertEqual(result["priority_action"], "idle_normal_send")
+        self.assertEqual(result["priority_action"], "kimi_priority_shortcut")
         self.assertTrue(
             all(
-                "modifiers" not in args
+                args.get("modifiers") == 2
                 for method, args in self.client.commands
                 if method == "Input.dispatchKeyEvent"
             )

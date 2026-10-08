@@ -12,11 +12,11 @@ Windows 桌面端 Codex、Kimi Code、ZCode 之间的本地消息桥。Codex 把
 
 - 按真实会话 ID 和绑定版本投递；别名变化不会让旧消息改投另一聊天。
 - SQLite 持久化消息、绑定和回执。`queued → delivered → acknowledged → completed/failed` 分别表示入队、接收 Hook 取件、Agent 确认、Agent 返回结果。
-- Kimi/ZCode 的桌面唤醒使用经过进程归属核验的本地 CDP 端口。正常发送只输入唤醒标记，正文由 Hook 取出。
+- Kimi/ZCode 的桌面唤醒使用经过进程归属核验的本地 CDP 端口，只输入接收会话限定的唤醒元数据；正文由 Hook 或按精确消息 ID 的收件工具取出，兼容 Kimi 插队跳过接收 Hook 的情况。
 - 发送前检查会话、输入框、草稿、附件和忙碌状态。结果不确定时保留投递日志并阻止自动重复发送。
 - 提供可选 Cua Driver 后台控制策略及注册辅助脚本。它与消息桥的 CDP 传输分别实现；后台能力取决于应用和控件。
 
-回执保存在对应消息记录中，由发送方查询。当前没有完整实现“自动唤醒原 Codex 聊天”的调度器。多个项目应使用不同别名，例如 `projectA-kimi-review`，并分别绑定目标会话；桌面派发有全局锁，但没有完善的并发发送队列。
+回执保存在对应消息记录中，由发送方查询。当前没有完整实现“自动唤醒原 Codex 聊天”的调度器；可使用 Codex 宿主中已配置的心跳查询原消息。多个项目应使用不同别名，例如 `projectA-kimi-review`，并分别绑定目标会话；持久发送队列通过每个 mailbox 的串行 worker 和共享桌面锁协调派发，多个独立 Codex 会话同时操作真实桌面的验收仍待完成。
 
 ## 环境与配置
 
@@ -71,6 +71,8 @@ py -3 -m venv .venv
 
 发送端工具：`courier_list_sessions`、`courier_bind_target`、`courier_send_message`、`courier_dispatch_message`、`courier_get_message_status`、`courier_wait_for_receipt`。接收端工具：`courier_receive_messages`、`courier_acknowledge_message`、`courier_return_result`，以及公共查询工具。接收方必须使用 Hook 提供的真实 `caller_session_id`。工具发现也保留对应 `bridge_*` 别名，旧提示词可继续使用。
 
+监督外部 AI 可用发送端新增的 `courier_get_agent_status(alias=目标别名)`（旧名 `bridge_agent_status`）。它只读查询精确绑定会话，区分正在生成、当前空闲、近期结束事件、等待审批、等待用户输入和无法确认；消息查询也附带原接收会话的 `agent` 状态。支持的 ZCode 版本按工作目录和精确会话 ID 查询后台 controller，不依赖当前选中聊天或侧栏渲染；旧 Stop 超期不会使有效的当前观察降为 unknown。空闲但仍有未终结回执会提示检查，不能把空闲或 ACK 当成任务完成。新工具需重新加载 Codex MCP；新增 Hook 在新建或安全恢复的外部会话中加载，不强制重启业务聊天。详见 [运行状态说明](docs/agent-status.md)。
+
 默认发送流程在 MCP 内执行固定后台派发，无需再让模型额外运行派发 Shell 脚本。[自动审批说明](docs/codex-approvals.md)记录配置边界、验证结果和使用提示词。
 
 ## 协作提示词
@@ -107,6 +109,6 @@ Cua Driver 来自 [trycua/cua](https://github.com/trycua/cua)，是外部依赖�
 
 依赖和第三方许可边界见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)，贡献检查见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
-当前源码增加持久队列、有限重试、有时限的锁等待、忙碌聊天切换及原生插队，包含 147 项回归。发送异步受理后查询 `dispatch_queue` 和原 ID 的真实回执；真实多项目并发及运行中插队消费仍待验收。旧 `v0.1.0-preview` Release 下载包不包含此次升级，请使用当前 `main` 源码；每次提交的实际 CI 结果见 [Actions](https://github.com/xiaoctf/harness-courier/actions)。见 [派发与插队](docs/dispatch-and-priority.md)。
+当前源码增加持久队列、有限重试、有时限的锁等待、忙碌聊天切换、原生插队及可选强制策略、漏 Hook 收件兼容和运行状态查询，包含 185 项回归。发送异步受理后查询 `dispatch_queue`、原 ID 的真实回执及接收会话状态。本机 Kimi Code 1.0.4 / ZCode 3.14.4 已验证真实往返、运行中优先消费和状态观察，包含 ZCode 未选中聊天且旧 Stop 超期时的当前空闲状态；只使用一个 Codex 发起环境，多个独立发送方并发与跨版本、跨机器验收仍待完成。旧 `v0.1.0-preview` Release 下载包不包含此次升级，请使用当前 `main` 源码；每次提交的实际 CI 结果见 [Actions](https://github.com/xiaoctf/harness-courier/actions)。见 [派发与插队](docs/dispatch-and-priority.md)。
 
-派发默认原生插队并允许切换忙碌聊天；需要普通排队时显式设置 `priority=false`，草稿与身份保护仍生效。
+派发默认原生插队并允许切换忙碌聊天；仅管理员未开启 `force_priority` 时，显式 `priority=false` 才使用普通排队。开启后入队和投递均覆盖 false，草稿与身份保护仍生效。

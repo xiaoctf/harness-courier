@@ -7,6 +7,7 @@ LEGACY_TO_CANONICAL = {
     "bridge_dispatch": "courier_dispatch_message",
     "bridge_status": "courier_get_message_status",
     "bridge_wait": "courier_wait_for_receipt",
+    "bridge_agent_status": "courier_get_agent_status",
     "bridge_inbox": "courier_receive_messages",
     "bridge_ack": "courier_acknowledge_message",
     "bridge_reply": "courier_return_result",

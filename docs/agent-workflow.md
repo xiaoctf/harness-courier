@@ -52,6 +52,8 @@
 
 实际开工应有命令、文件改动或其他可核验事件；阶段完成应有对应产物；验收需要与风险相称的独立检查。`online`、mtime、计划文字和单次无进程观察都不足以证明进度或停工。
 
+`courier_get_agent_status` 增加精确会话的只读运行观察：当前原生停止按钮与编辑器共同提供 `running/idle`，近期 Stop、工具结束和审批 Hook 提供独立事件与时间。查询不会切换聊天或唤醒任务。未选中的聊天没有已验证原生状态时保留 `unknown`，近期 Hook 仍可显示；事件过期不能证明当前状态。出现 `idle_with_unfinished_messages` 或 `progress_needs_verification` 时检查实际输入消费、产物和合法后继。不要自动重发 ACK 任务或停止进程。字段和加载限制见 [运行状态说明](agent-status.md)。
+
 ## 等待、重试与接续
 
 `courier_wait_for_receipt` 的 `timeout` 是 0..55 秒，`until` 只能是 `acknowledged` 或 `completed`；它默认等待终态，达到时限则返回当前状态，终态 `failed` 也会结束等待。可先等 ACK，再等结果。更长的任务应按预计时长采用宿主真实支持的低频等待或已授权调度，不紧密轮询，也不反复播报无变化。

@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import cdp_delivery as cdp
 from cu_client import DriverError
+from wake_protocol import wake_text
 
 MID = "msg_" + "a" * 32
 BINDING = {"harness": "kimi", "session_id": "session_fixture", "title": "Fixture"}
@@ -91,7 +92,10 @@ class DeliveryTests(unittest.TestCase):
         result = self.send()
         self.assertEqual(
             self.client.commands[0],
-            ("Input.insertText", {"text": f"[HARNESS_BRIDGE_WAKE:{MID}]"}),
+            (
+                "Input.insertText",
+                {"text": wake_text(MID, "kimi", BINDING["session_id"])},
+            ),
         )
         self.assertEqual(
             [c[0] for c in self.client.commands],

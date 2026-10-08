@@ -39,7 +39,7 @@ def tool_specs(harness: str) -> list[dict]:
         ),
         (
             "bridge_wait",
-            "Wait up to 55 seconds for a target ACK/result. A timeout is not failure.",
+            "Wait up to 55 seconds for a real ACK/result; controller waits also report idle/Stop with a missing receipt. Read wait_reason and agent. Never infer success or resend from timeout.",
             schema(
                 {
                     "message_id": STRING,
@@ -52,6 +52,23 @@ def tool_specs(harness: str) -> list[dict]:
     ]
     if harness == "codex":
         common += [
+            (
+                "bridge_agent_status",
+                "Read the bound agent's current turn, last passive Hook and unfinished receipts. Never navigates or wakes it. Idle/Stop does not prove task completion; unknown stays unknown.",
+                schema(
+                    {
+                        "alias": STRING,
+                        "observe_native": {"type": "boolean", "default": True},
+                        "stale_after_seconds": {
+                            "type": "number",
+                            "minimum": 30,
+                            "maximum": 86400,
+                            "default": 300,
+                        },
+                    },
+                    ["alias"],
+                ),
+            ),
             (
                 "bridge_bind",
                 "Bind an alias to an explicitly chosen real session ID. Do not guess recipients.",
@@ -83,7 +100,7 @@ def tool_specs(harness: str) -> list[dict]:
                         "priority": {
                             "type": "boolean",
                             "default": True,
-                            "description": "Native priority delivery; may interrupt the bound target. Requires authorization.",
+                            "description": "Native priority delivery; may interrupt the bound target. Mailbox force_priority policy overrides false. Requires authorization.",
                         },
                     },
                     ["alias", "body"],
@@ -174,6 +191,16 @@ def invoke(
     ):
         raise BridgeError("Invalid tool arguments")
     name = legacy_name(name)
+    if name == "bridge_agent_status":
+        from agent_activity import agent_status
+
+        return agent_status(box, **arguments)
+    if name in ("bridge_status", "bridge_wait") and harness == "codex":
+        from agent_activity import wait_with_activity, with_activity
+
+        if name == "bridge_wait":
+            return wait_with_activity(box, **arguments)
+        return with_activity(box, box.status(**arguments))
     direct = {
         "bridge_peers": box.peers,
         "bridge_status": box.status,

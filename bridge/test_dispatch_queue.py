@@ -98,6 +98,43 @@ class QueueTests(unittest.TestCase):
                 db.execute("SELECT count(*) FROM dispatch_jobs").fetchone()[0], 1
             )
 
+    def test_force_priority_policy_overrides_explicit_false_at_enqueue(self):
+        (self.root / "delivery-policy.json").write_text('{"force_priority":true}')
+        mid = self.job(priority=False)
+        self.assertEqual(queue.queue_status(self.box, mid)["priority"], 1)
+
+    def test_force_priority_policy_applies_to_existing_pending_without_replay(self):
+        pending = self.job(priority=False)
+        done = self.job(priority=False)
+        with self.box.connect() as db:
+            db.execute(
+                "UPDATE dispatch_jobs SET state='submitted' WHERE message_id=?", (done,)
+            )
+        (self.root / "delivery-policy.json").write_text('{"force_priority":true}')
+        dispatch = Mock(side_effect=self.success)
+        queue.run_one(self.box, deliver=dispatch)
+        dispatch.assert_called_once_with(
+            pending, priority=True, allow_busy_navigation=True
+        )
+        self.assertEqual(queue.queue_status(self.box, done)["state"], "submitted")
+
+    def test_direct_mailbox_dispatch_obeys_force_policy(self):
+        message = self.box.send("fixture", "fixture")
+        (self.root / "delivery-policy.json").write_text('{"force_priority":true}')
+        # Both compatibility modules resolve to the same dev transport object.
+        with patch(
+            "cdp_delivery.deliver_background", return_value={"submitted": True}
+        ) as transport:
+            self.box.dispatch(message["id"], priority=False)
+        self.assertTrue(transport.call_args.kwargs["priority"])
+
+    def test_invalid_policy_rejects_before_creating_dispatch_job(self):
+        message = self.box.send("fixture", "fixture")
+        (self.root / "delivery-policy.json").write_text('{"force_priority":"yes"}')
+        with self.assertRaisesRegex(ValueError, "boolean"):
+            queue.enqueue(self.box, message["id"], start=False)
+        self.assertIsNone(queue.queue_status(self.box, message["id"]))
+
     def test_priority_then_fifo_and_held_target_does_not_block_next(self):
         normal = self.job(priority=False)
         first = self.job()

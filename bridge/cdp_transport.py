@@ -18,6 +18,7 @@ from urllib.request import ProxyHandler, build_opener
 
 from harness_courier.app_registry import APPS, verified_port
 from harness_courier.errors import DriverError
+from wake_protocol import wake_text
 
 ROOT = Path(__file__).resolve().parent
 
@@ -132,6 +133,10 @@ class CdpClient:
         raise DriverError("DevTools outcome unknown; verify receipt before retrying")
 
     def evaluate(self, operation, binding, marker=""):
+        if operation == "agent_observe":
+            from agent_activity import probe_native
+
+            return probe_native(self, binding)
         args = json.dumps(
             {
                 "op": operation,
@@ -287,7 +292,7 @@ def _deliver_background(
         raise DriverError("Invalid background recipient or message ID")
     if type(priority) is not bool or (priority and recovery_sha is not None):
         raise DriverError("Invalid priority option or priority combined with recovery")
-    marker = f"[HARNESS_BRIDGE_WAKE:{message_id}]"
+    marker = wake_text(message_id, binding["harness"], binding["session_id"])
     if recovery_body is not None:
         if (
             recovery_sha is None
@@ -441,25 +446,33 @@ def _deliver_background(
                 saved["original_journal_sha256"] = original_sha
             journal.write_text(json.dumps(saved), encoding="utf-8")
             # A lost response after this point must never cause an automatic resubmit.
-            if priority_active and binding["harness"] == "kimi":
+            priority_action = None
+            if priority and binding["harness"] == "kimi":
                 from priority_delivery import steer_kimi
 
-                steer_kimi(client, binding, marker)
+                if steer_kimi(client, binding, marker):
+                    priority_action = (
+                        "kimi_steer_current_draft"
+                        if priority_active
+                        else "kimi_priority_shortcut"
+                    )
+                else:
+                    _submit_composer(client, binding, marker)
+                    priority_action = "kimi_normal_send_after_priority_shortcut_noop"
             else:
                 _submit_composer(client, binding, marker)
             # A click is not application acceptance. Require the verified
             # composer to clear, while still leaving receipt proof to the Hook.
             _confirm_composer_clear(client, binding, marker)
-            priority_action = "idle_normal_send" if priority else None
-            if priority_active:
-                priority_action = "kimi_steer_current_draft"
-                if binding["harness"] == "zcode":
-                    from priority_delivery import promote_zcode
+            if priority and binding["harness"] == "zcode":
+                from priority_delivery import promote_zcode
 
-                    saved["phase"] = "priority_attempt"
-                    journal.write_text(json.dumps(saved), encoding="utf-8")
-                    promote_zcode(client, binding, marker)
-                    priority_action = "zcode_send_queued_now"
+                saved["phase"] = "priority_attempt"
+                journal.write_text(json.dumps(saved), encoding="utf-8")
+                promoted = promote_zcode(
+                    client, binding, marker, require_queue=priority_active
+                )
+                priority_action = promoted["action"]
             saved["priority_action"] = priority_action
             saved["phase"] = "submitted"
             temporary = journal.with_suffix(".tmp")

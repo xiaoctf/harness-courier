@@ -404,6 +404,9 @@ class Mailbox:
         """Attempt a wake without promoting mailbox delivery or ACK state."""
         if type(allow_busy_navigation) is not bool or type(priority) is not bool:
             raise BridgeError("Delivery options must be booleans")
+        from priority_policy import resolve_priority
+
+        priority = resolve_priority(self.path, priority)
         message = self.status(message_id)
         # SessionStart may deliver Hook context before the composer loads.
         # An explicit retry can still wake that chat if GUI delivery failed;

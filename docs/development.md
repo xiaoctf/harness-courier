@@ -54,7 +54,7 @@ python bridge/verify_cdp_fixture.py
 
 夹具结果保存在被 Git 排除的 `bridge/verification/cdp-fixture.json`。原重构验证报告保存在 `bridge/verification/refactor-checks.json`，属于历史证据。自动审批兼容改动的当前报告为 `bridge/verification/auto-approval-checks.json`。
 
-## 本轮验证范围
+## 初始重构验证范围（历史）
 
 - 原基线 66 项测试在格式化、模块提取、共享启动配置及 CDP 阶段提取后通过。
 - 新增 16 项回归后共 82 项通过，覆盖配置覆盖/拒绝、启动只读与预检中止、端口归属、CMD 错误码、包/旧 CLI 一致、MCP 流隔离、临时 Cua 配置保留和幂等。
@@ -92,3 +92,13 @@ python bridge/verify_cdp_fixture.py
 本地队列补丁共 147 项回归通过，Ruff 检查、格式检查及 wheel/sdist 构建通过。覆盖真实双 Windows worker 争用、优先级与同级 FIFO、临时错误退避、重试上限、崩溃暂停、ACK 防重放、改绑定拒绝、输入前后失败分类、显式安全重试和离线注册聊天入队。隔离 headless fixture 验证精确原生优先入口，不能代替真实桌面运行中插队消费。
 
 机器现用的 legacy 单文件版本按相同逻辑安装并通过 109 项回归；生产应用路径和既有数据库、Hook、绑定保留。实际业务聊天未用于回归。本增量包含在当前 `main` 源码；每次提交的远端验证以 Actions 为准，旧预览版的 104 项 CI 记录不代表此增量已经在远端运行。
+
+## 2026-10-08 收件与运行状态增量
+
+当前共 185 项回归。`priority_policy.py` 在明确派发的入队、worker 取件和直接投递处读取管理员强制策略。`wake_protocol.py` 定义接收会话限定的唤醒元数据，接收 Hook 与原生插队漏 Hook 时的精确 ID 取件共用身份校验；传输不输入业务正文。
+
+`agent_activity.py` 将当前模型轮次观察与消息回执分别报告。只读 `agent_observer.js` 每次查询从包资源加载，与投递脚本分离；支持 Kimi 已渲染的精确侧栏会话及 ZCode 工作目录限定的 Host Controller 精确会话查询。ZCode 不依赖目标聊天选中或侧栏渲染，不以历史 React 缓存、旧 Stop 或离线元数据冒充当前状态。不支持、超时、身份冲突或未知 schema 保持 unknown；独立后台作业状态仍未知。
+
+本机 Kimi Code 1.0.4 / ZCode 3.14.4 的测试聊天已完成真实往返、原生优先消费、草稿保护和运行状态验收，包括 Kimi 原生插队跳过接收 Hook 后的真实收件，以及 ZCode 未选中聊天、旧 Stop 超期时的当前 idle 观察。最新真实 running → 回执终态 → idle 往返使用已选中的 ZCode 测试聊天；未选中 running 和侧栏未渲染目标的覆盖来自隔离 headless 夹具，不能混写为真实桌面验收。
+
+上述真实测试来自一个 Codex 发起环境。多个独立 Codex 并发、其他桌面版本、跨机器兼容、Cua 实际输入与宿主审批仍需分别验收。MCP 保存回执和提供状态查询，不主动唤醒 Codex；已配置的 Codex 心跳可以监督原消息 ID。公开副本应再次运行 Ruff、185 项回归、隔离 DOM 夹具和 wheel/sdist 构建，并检查 observer 资源打包；远端 Windows/Python 矩阵结果以当前提交 Actions 为准。

@@ -14,6 +14,8 @@ import time
 import tomllib
 from pathlib import Path
 
+from agent_activity import PASSIVE_EVENTS
+
 from bridge import ROOT
 
 NAME = "harness_courier"
@@ -71,13 +73,22 @@ def toml_section(python):
     return f"\n{START}\n[mcp_servers.{NAME}]\ncommand = {json.dumps(s['command'])}\nargs = {json.dumps(s['args'])}\n{END}\n"
 
 
-def kimi_hook_section(python):
+def kimi_hook_section(python, events=None):
     command = subprocess.list2cmdline(
         [str(python), str(ROOT / "receiver_hook.py"), "--harness", "kimi"]
     )
     entries = [
         f"[[hooks]]\nevent = {json.dumps(event)}\ncommand = {json.dumps(command)}\ntimeout = 5\n"
-        for event in ("SessionStart", "UserPromptSubmit", "SessionEnd")
+        for event in (
+            events
+            if events is not None
+            else (
+                "SessionStart",
+                "UserPromptSubmit",
+                "SessionEnd",
+                *sorted(PASSIVE_EVENTS),
+            )
+        )
     ]
     return "\n" + START + "\n" + "\n".join(entries) + END + "\n"
 
@@ -123,6 +134,30 @@ def build_changes(home, python):
     old_object = tomllib.loads(raw.decode("utf-8-sig"))
     if START.encode() in raw:
         new = raw
+        command = subprocess.list2cmdline(
+            [str(python), str(ROOT / "receiver_hook.py"), "--harness", "kimi"]
+        )
+        missing = []
+        for event in sorted(PASSIVE_EVENTS):
+            matches = [
+                hook
+                for hook in old_object.get("hooks", [])
+                if hook.get("event") == event and hook.get("command") == command
+            ]
+            if matches and any(
+                hook != {"event": event, "command": command, "timeout": 5}
+                for hook in matches
+            ):
+                raise ValueError("Unmanaged Kimi activity Hook conflict")
+            if not matches:
+                missing.append(event)
+        if missing:
+            addition = (
+                kimi_hook_section(python, missing)
+                .replace(START, "# BEGIN HARNESS COURIER ACTIVITY")
+                .replace(END, "# END HARNESS COURIER ACTIVITY")
+            )
+            new += addition.encode("utf-8")
     else:
         new = raw + kimi_hook_section(python).encode("utf-8")
     new_object = tomllib.loads(new.decode("utf-8-sig"))
@@ -155,7 +190,7 @@ def build_changes(home, python):
         "enabled": True,
         "timeoutMs": 5000,
     }
-    for event in ("SessionStart", "UserPromptSubmit"):
+    for event in ("SessionStart", "UserPromptSubmit", *sorted(PASSIVE_EVENTS)):
         rules = events.setdefault(event, [])
         matches = [
             h

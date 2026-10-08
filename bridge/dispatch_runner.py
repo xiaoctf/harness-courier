@@ -17,7 +17,9 @@ from typing import Any
 
 from harness_courier.tool_names import legacy_name
 
-READ_TOOLS = frozenset({"bridge_peers", "bridge_status", "bridge_wait"})
+READ_TOOLS = frozenset(
+    {"bridge_peers", "bridge_status", "bridge_wait", "bridge_agent_status"}
+)
 KNOWN_TOOLS = READ_TOOLS | {
     "bridge_bind",
     "bridge_send",

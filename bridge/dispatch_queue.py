@@ -16,6 +16,7 @@ import time
 from pathlib import Path
 
 from cu_client import DriverError
+from priority_policy import resolve_priority
 
 ROOT = Path(__file__).resolve().parent
 MAX_ATTEMPTS = 6
@@ -70,6 +71,8 @@ def enqueue(box, message_id, *, priority=True, allow_busy_navigation=True, start
         raise ValueError("Invalid dispatch message ID")
     if type(priority) is not bool or type(allow_busy_navigation) is not bool:
         raise ValueError("Delivery options must be booleans")
+    requested_priority = priority
+    priority = resolve_priority(box.path, priority)
     message = box.status(message_id)
     if message["state"] in ("acknowledged", "completed", "failed") or (
         message["state"] == "delivered" and not message["dispatch_error"]
@@ -103,6 +106,11 @@ def enqueue(box, message_id, *, priority=True, allow_busy_navigation=True, start
                 stamp,
             ),
         )
+        if resolve_priority(box.path, False):
+            db.execute(
+                "UPDATE dispatch_jobs SET priority=1 WHERE message_id=? AND state='pending'",
+                (message_id,),
+            )
     job = queue_status(box, message_id)
     journal = ROOT / "data" / "background-delivery" / (message_id + ".json")
     if (
@@ -125,6 +133,8 @@ def enqueue(box, message_id, *, priority=True, allow_busy_navigation=True, start
     result["desktop_delivery"] = {
         "submitted": None,
         "transport": "persistent_outbox",
+        "requested_priority": requested_priority,
+        "effective_priority": priority,
         "note": (
             "Dispatch queued; query the original ID for worker progress and receiver receipts"
             if result["dispatch_queue"]["state"] in ("pending", "working")
@@ -237,6 +247,10 @@ def run_one(box, *, deliver=None, stamp=None):
     stamp = time.time() if stamp is None else stamp
     with box.connect() as db:
         db.execute("BEGIN IMMEDIATE")
+        if resolve_priority(box.path, False):
+            db.execute(
+                "UPDATE dispatch_jobs SET priority=1 WHERE state='pending' AND priority=0"
+            )
         job = db.execute(
             """SELECT * FROM dispatch_jobs WHERE state='pending'
             AND next_attempt_at<=? ORDER BY priority DESC,created_at,message_id LIMIT 1""",

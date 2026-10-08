@@ -61,8 +61,11 @@ class NamingCompatibilityTests(unittest.TestCase):
         for role in ("codex", "kimi", "zcode"):
             specs = tool_specs(role)
             names = {tool["name"]: tool for tool in specs}
-            self.assertEqual(len(names), 12)
-            self.assertTrue(all(t["name"].startswith("courier_") for t in specs[:6]))
+            count = 7 if role == "codex" else 6
+            self.assertEqual(len(names), count * 2)
+            self.assertTrue(
+                all(t["name"].startswith("courier_") for t in specs[:count])
+            )
             for old, new in LEGACY_TO_CANONICAL.items():
                 with self.subTest(role=role, operation=old):
                     self.assertEqual(old in names, new in names)
@@ -308,7 +311,7 @@ class NamingCompatibilityTests(unittest.TestCase):
             self.assertEqual(
                 responses[0]["result"]["serverInfo"]["name"], "harness-courier"
             )
-            self.assertEqual(len(responses[1]["result"]["tools"]), 12)
+            self.assertEqual(len(responses[1]["result"]["tools"]), 14)
             self.assertEqual(responses[2]["result"], responses[3]["result"])
             self.assertFalse(responses[2]["result"]["isError"])
 

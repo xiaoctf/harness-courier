@@ -56,9 +56,11 @@ class McpDispatchTests(unittest.TestCase):
                 "bridge_peers",
                 "bridge_status",
                 "bridge_wait",
+                "bridge_agent_status",
                 "courier_list_sessions",
                 "courier_get_message_status",
                 "courier_wait_for_receipt",
+                "courier_get_agent_status",
             },
         )
         self.assertTrue(annotations["bridge_send"]["openWorldHint"])
