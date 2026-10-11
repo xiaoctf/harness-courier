@@ -9,6 +9,7 @@ from unittest.mock import patch
 from agent_activity import (
     agent_status,
     inspect_target,
+    probe_target,
     record_event,
     wait_with_activity,
     with_activity,
@@ -409,6 +410,104 @@ class ActivityTests(unittest.TestCase):
         self.assertEqual(len(parsed["hooks"]), 7)
         second = install(root, Path("python"), apply=True)
         self.assertTrue(all(not item["changed"] for item in second["configuration"]))
+
+
+class NativeConnectionTests(unittest.TestCase):
+    def setUp(self):
+        factory = patch("cdp_delivery.CdpClient").start()
+        self.addCleanup(patch.stopall)
+        self.client = factory.return_value.__enter__.return_value
+        self.client.targets.return_value = [{"id": "fixture"}]
+        self.probe = patch(
+            "agent_activity.probe_native", return_value={"activity_probe": True}
+        ).start()
+        self.binding = {"harness": "zcode", "session_id": "fixture"}
+
+    def test_handshake_timeout_reconnects_once_before_observation(self):
+        from websocket import WebSocketTimeoutException
+
+        self.client.attach.side_effect = [WebSocketTimeoutException("PRIVATE"), None]
+        result = probe_target(self.binding)
+        self.assertTrue(result["available"])
+        self.assertEqual(result["connection_attempts"], 2)
+        self.assertEqual(self.client.attach.call_count, 2)
+        self.probe.assert_called_once_with(self.client, self.binding)
+        self.client.call.assert_not_called()
+
+    def test_repeated_handshake_timeout_stays_unknown_with_bounded_attempts(self):
+        from websocket import WebSocketTimeoutException
+
+        self.client.attach.side_effect = WebSocketTimeoutException("PRIVATE")
+        result = probe_target(self.binding)
+        self.assertFalse(result["available"])
+        self.assertEqual(result["probe_stage"], "websocket_connect")
+        self.assertEqual(result["connection_attempts"], 2)
+        self.assertEqual(self.client.attach.call_count, 2)
+        self.assertNotIn("PRIVATE", json.dumps(result))
+        self.probe.assert_not_called()
+
+    def test_identity_rejection_is_not_retried(self):
+        from cu_client import DriverError
+
+        self.client.attach.side_effect = DriverError("Rejected nonlocal address")
+        result = probe_target(self.binding)
+        self.assertFalse(result["available"])
+        self.assertEqual(result["connection_attempts"], 1)
+        self.client.attach.assert_called_once()
+        self.probe.assert_not_called()
+
+    def test_repeated_read_only_timeout_stays_unknown_after_two_attempts(self):
+        from websocket import WebSocketTimeoutException
+
+        self.probe.side_effect = WebSocketTimeoutException("PRIVATE")
+        result = probe_target(self.binding)
+        self.assertFalse(result["available"])
+        self.assertEqual(result["probe_stage"], "native_observation")
+        self.assertEqual(result["connection_attempts"], 2)
+        self.assertEqual(result["observation_attempts"], 2)
+        self.assertEqual(self.client.attach.call_count, 2)
+        self.assertEqual(self.probe.call_count, 2)
+        self.client.call.assert_not_called()
+        self.assertNotIn("PRIVATE", json.dumps(result))
+
+    def test_read_only_timeout_recovers_with_same_binding_and_fresh_connection(self):
+        from websocket import WebSocketTimeoutException
+
+        self.probe.side_effect = [
+            WebSocketTimeoutException("PRIVATE"),
+            {"activity_probe": True},
+        ]
+        result = probe_target(self.binding)
+        self.assertTrue(result["available"])
+        self.assertEqual(result["observation_attempts"], 2)
+        self.assertEqual(self.client.attach.call_count, 2)
+        self.assertTrue(
+            all(
+                c.args == (self.client, self.binding) for c in self.probe.call_args_list
+            )
+        )
+        self.client.call.assert_not_called()
+
+    def test_handshake_and_read_share_one_retry_budget(self):
+        from websocket import WebSocketTimeoutException
+
+        self.client.attach.side_effect = [WebSocketTimeoutException("PRIVATE"), None]
+        self.probe.side_effect = WebSocketTimeoutException("PRIVATE")
+        result = probe_target(self.binding)
+        self.assertFalse(result["available"])
+        self.assertEqual(result["connection_attempts"], 2)
+        self.assertEqual(result["observation_attempts"], 1)
+        self.probe.assert_called_once()
+
+    def test_completed_unknown_observation_is_not_retried(self):
+        self.probe.return_value = {
+            "activity_probe": True,
+            "session_activity": {"verified": False, "reason": "target_source_offline"},
+        }
+        result = probe_target(self.binding)
+        self.assertTrue(result["available"])
+        self.assertEqual(result["observation_attempts"], 1)
+        self.probe.assert_called_once()
 
 
 if __name__ == "__main__":

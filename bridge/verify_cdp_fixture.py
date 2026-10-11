@@ -508,6 +508,9 @@ def main():
                         == after["foreground"],
                     }
                 )
+            from verify_session_navigation import verify
+
+            navigation_checks = verify(client)
             # Exercise native priority paths and exact queue identity in the DOM fixture.
             client.call(
                 "Runtime.evaluate",
@@ -749,6 +752,7 @@ def main():
             "scope": "isolated headless CDP/DOM fixture; real desktop harnesses unverified",
             "results": results,
             "actual_dom_native_priority": True,
+            "native_navigation_guards": navigation_checks,
             "actual_dom_false_busy_native_priority": True,
             "actual_dom_idle_priority_shortcut_fallback_once": True,
             "actual_dom_priority_old_queue_preserved": True,

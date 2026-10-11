@@ -44,7 +44,11 @@ def queue_status(box, message_id):
         if not exists:
             return None
         row = db.execute(
-            f"SELECT {JOB_FIELDS} FROM dispatch_jobs WHERE message_id=?", (message_id,)
+            "SELECT "
+            + ",".join("j." + field for field in JOB_FIELDS.split(","))
+            + ",m.state AS receiver_state FROM dispatch_jobs j "
+            "JOIN messages m ON m.id=j.message_id WHERE j.message_id=?",
+            (message_id,),
         ).fetchone()
     if not row:
         return None
@@ -61,6 +65,25 @@ def queue_status(box, message_id):
         )
         if key in delivery
     }
+    confirmed = result["receiver_state"] in ("acknowledged", "completed", "failed")
+    result["receipt_confirmed"] = confirmed
+    result["error_is_historical"] = confirmed and bool(result["last_error"])
+    if confirmed:
+        result["next_action"] = (
+            "Do not redispatch: receiver receipt supersedes transport errors. Read the original result or await it."
+        )
+    elif result["state"] in ("pending", "working"):
+        result["next_action"] = (
+            "Wait for the current worker and query the original message ID."
+        )
+    elif result["state"] == "submitted":
+        result["next_action"] = (
+            "Await the receiver ACK/result; submission alone does not prove receipt."
+        )
+    else:
+        result["next_action"] = (
+            "Inspect the original receipt and delivery journal before any same-ID recovery."
+        )
     return result
 
 
@@ -74,9 +97,9 @@ def enqueue(box, message_id, *, priority=True, allow_busy_navigation=True, start
     requested_priority = priority
     priority = resolve_priority(box.path, priority)
     message = box.status(message_id)
-    if message["state"] in ("acknowledged", "completed", "failed") or (
-        message["state"] == "delivered" and not message["dispatch_error"]
-    ):
+    # A receiver Hook can fetch mailbox-only text without waking the model.
+    # Explicit dispatch remains valid until ACK; the job/journal guards replay.
+    if message["state"] not in ("queued", "delivered"):
         return message
     target = box.binding(message["alias"])
     if (target["harness"], target["session_id"], target["revision"]) != (
@@ -87,6 +110,7 @@ def enqueue(box, message_id, *, priority=True, allow_busy_navigation=True, start
         raise ValueError("Binding changed; queue will not retarget the message")
     initialize(box)
     stamp = time.time()
+    journal = ROOT / "data" / "background-delivery" / (message_id + ".json")
     with box.connect() as db:
         db.execute("BEGIN IMMEDIATE")
         # Idempotent by message ID, including held/working/submitted jobs.
@@ -111,19 +135,30 @@ def enqueue(box, message_id, *, priority=True, allow_busy_navigation=True, start
                 "UPDATE dispatch_jobs SET priority=1 WHERE message_id=? AND state='pending'",
                 (message_id,),
             )
-    job = queue_status(box, message_id)
-    journal = ROOT / "data" / "background-delivery" / (message_id + ".json")
-    if (
-        job["state"] in ("held", "exhausted")
-        and job["last_delivery"].get("retry_safe") is True
-        and not journal.exists()
-    ):
-        with box.connect() as db:
+        # The safety decision and rearm are one transaction. A competing retry
+        # cannot overwrite a newer attempt using an older retry-safe snapshot.
+        job = db.execute(
+            "SELECT state,delivery FROM dispatch_jobs WHERE message_id=?", (message_id,)
+        ).fetchone()
+        if (
+            job["state"] in ("held", "exhausted")
+            and json.loads(job["delivery"] or "{}").get("retry_safe") is True
+            and not journal.exists()
+        ):
             db.execute(
                 """UPDATE dispatch_jobs SET state='pending',attempts=0,created_at=?,
-                next_attempt_at=?,updated_at=?,last_error=NULL
-                WHERE message_id=? AND state IN ('held','exhausted')""",
-                (stamp, stamp, stamp, message_id),
+                next_attempt_at=?,updated_at=?,last_error=NULL,delivery=NULL,
+                priority=?,allow_busy_navigation=?
+                WHERE message_id=? AND state IN ('held','exhausted')
+                AND EXISTS (SELECT 1 FROM messages WHERE id=message_id AND state IN ('queued','delivered'))""",
+                (
+                    stamp,
+                    stamp,
+                    stamp,
+                    int(priority),
+                    int(allow_busy_navigation),
+                    message_id,
+                ),
             )
     worker_pid = ensure_worker(box) if start else None
     result = box.status(message_id)
@@ -236,6 +271,7 @@ def recover_working(box):
     with box.connect() as db:
         db.execute(
             """UPDATE dispatch_jobs SET state='held',updated_at=?,
+            delivery=NULL,
             last_error='Worker interrupted; inspect original receipt/journal before retry'
             WHERE state='working'""",
             (time.time(),),
@@ -264,23 +300,22 @@ def run_one(box, *, deliver=None, stamp=None):
             (stamp, job["message_id"]),
         )
     mid = job["message_id"]
-    if stamp - job["created_at"] > MAX_AGE:
-        state, error, delivery = (
-            "exhausted",
-            "Dispatch retry window expired",
-            json.loads(job["delivery"] or '{"retry_safe":true}'),
-        )
-    else:
-        try:
-            current = box.status(mid)
-            if current["state"] in ("acknowledged", "completed", "failed"):
-                result = current
-            else:
-                result = (deliver or box.dispatch)(
-                    mid,
-                    priority=bool(job["priority"]),
-                    allow_busy_navigation=bool(job["allow_busy_navigation"]),
-                )
+    try:
+        current = box.status(mid)
+        if current["state"] in ("acknowledged", "completed", "failed"):
+            state, error, delivery = "cancelled", None, {}
+        elif stamp - job["created_at"] > MAX_AGE:
+            state, error, delivery = (
+                "exhausted",
+                "Dispatch retry window expired",
+                json.loads(job["delivery"] or '{"retry_safe":true}'),
+            )
+        else:
+            result = (deliver or box.dispatch)(
+                mid,
+                priority=bool(job["priority"]),
+                allow_busy_navigation=bool(job["allow_busy_navigation"]),
+            )
             delivery = result.get("desktop_delivery", {})
             error = result.get("dispatch_error")
             if result["state"] in ("acknowledged", "completed", "failed"):
@@ -296,25 +331,26 @@ def run_one(box, *, deliver=None, stamp=None):
                     or delivery.get("reason")
                     or "Submission not confirmed; inspect original receipt"
                 )
-        except ValueError as exc:
-            # Mailbox validation happens before transport; retain its bounded
-            # domain error, but require inspection instead of automatic replay.
-            state, error, delivery = "held", str(exc), {}
-        except Exception:
-            # Unexpected failures are never eligible for automatic replay.
-            state, error, delivery = (
-                "held",
-                "Unexpected worker failure; inspect original receipt/journal",
-                {},
-            )
-    next_attempt = stamp + BACKOFF[min(job["attempts"], len(BACKOFF) - 1)]
+    except ValueError as exc:
+        # Mailbox validation happens before transport; retain its bounded
+        # domain error, but require inspection instead of automatic replay.
+        state, error, delivery = "held", str(exc), {}
+    except Exception:
+        # Unexpected failures are never eligible for automatic replay.
+        state, error, delivery = (
+            "held",
+            "Unexpected worker failure; inspect original receipt/journal",
+            {},
+        )
+    finished = max(stamp, time.time())
+    next_attempt = finished + BACKOFF[min(job["attempts"], len(BACKOFF) - 1)]
     with box.connect() as db:
         db.execute(
             """UPDATE dispatch_jobs SET state=?,updated_at=?,next_attempt_at=?,last_error=?,delivery=?
             WHERE message_id=? AND state='working'""",
             (
                 state,
-                time.time(),
+                finished,
                 next_attempt,
                 error[:1000] if error else None,
                 json.dumps(delivery),

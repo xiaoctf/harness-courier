@@ -9,6 +9,7 @@ from dispatch_runner import tool_annotations
 
 from .errors import BridgeError
 from .mailbox import Mailbox
+from .mcp_validation import validate_arguments
 from .tool_names import LEGACY_TO_CANONICAL, legacy_name
 
 
@@ -108,7 +109,7 @@ def tool_specs(harness: str) -> list[dict]:
             ),
             (
                 "bridge_dispatch",
-                "Retry a queued message or a delivered message whose desktop wake failed; never retry after ACK.",
+                "Dispatch the original queued or fetched-but-unacknowledged message. Existing submission journals prevent replay; never dispatch after ACK.",
                 schema(
                     {
                         "message_id": STRING,
@@ -183,13 +184,10 @@ def invoke(
     spec = next((t for t in tool_specs(harness) if t["name"] == name), None)
     if spec is None:
         raise BridgeError("Unknown or unavailable tool for this harness")
-    fields = spec["inputSchema"]
-    if (
-        not isinstance(arguments, dict)
-        or set(arguments) - set(fields["properties"])
-        or set(fields["required"]) - set(arguments)
-    ):
-        raise BridgeError("Invalid tool arguments")
+    try:
+        validate_arguments(spec["inputSchema"], arguments)
+    except ValueError as exc:
+        raise BridgeError(str(exc)) from None
     name = legacy_name(name)
     if name == "bridge_agent_status":
         from agent_activity import agent_status

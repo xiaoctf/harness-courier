@@ -85,6 +85,21 @@ does not establish whether arbitrary detached OS processes are still running.
 training, server or detached process keeps running. Receiver completion is a
 reported result; verify actual deliverables before declaring a parent goal done.
 
+The read-only observer reconnects once after a WebSocket handshake or socket
+timeout in its fixed activity query. Both stages share a two-attempt budget;
+the retry uses the same verified renderer and exact recipient. Repeated failures
+stay unavailable and report `probe_stage`, `connection_attempts`,
+`observation_attempts` and the exception class without raw exception text.
+Endpoint/identity failures and completed observations reporting offline,
+unsupported schema or controller timeout are not retried. This policy applies
+only to the read-only activity query. It never replays a task or desktop input;
+delivery retains its separate receipt and uncertain-submission guards.
+
+Sparse lifecycle Hook payloads preserve an already known nonempty title and
+workspace. A supplied nonempty value updates that session's metadata; missing
+metadata for a new session remains unknown. This prevents a later prompt or end
+Hook from erasing the workspace needed by the exact ZCode controller lookup.
+
 Controller message-status calls include an `agent` observation for the message's
 frozen recipient, even if the alias has since been rebound. Wait calls inspect
 passive observations and, when at least 20 seconds remain, also read the exact

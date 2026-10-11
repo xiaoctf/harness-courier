@@ -555,5 +555,78 @@ class DeliveryTests(unittest.TestCase):
                 cdp.endpoint_owner("kimi")
 
 
+class TransportTimeoutTests(unittest.TestCase):
+    def setUp(self):
+        from unittest.mock import Mock
+
+        self.client = object.__new__(cdp.CdpClient)
+        self.client.harness = "zcode"
+        self.client.port = 49372
+        self.client.sequence = 0
+        self.client.socket = Mock()
+
+    def test_handshake_timeout_has_stage_without_reconnecting_or_raw_error(self):
+        from websocket import WebSocketTimeoutException
+
+        target = {"webSocketDebuggerUrl": "ws://127.0.0.1:49372/devtools/page/fixture"}
+        with patch(
+            "websocket.create_connection",
+            side_effect=WebSocketTimeoutException("PRIVATE"),
+        ) as connect:
+            with self.assertRaisesRegex(
+                WebSocketTimeoutException, "websocket_connect timed out"
+            ) as caught:
+                self.client.attach(target)
+        connect.assert_called_once()
+        self.assertNotIn("PRIVATE", str(caught.exception))
+
+    def test_send_timeout_has_command_stage_and_never_replays_input(self):
+        from websocket import WebSocketTimeoutException
+
+        self.client.socket.send.side_effect = WebSocketTimeoutException("PRIVATE")
+        with self.assertRaisesRegex(
+            WebSocketTimeoutException, "command_send Input.insertText timed out"
+        ) as caught:
+            self.client.call("Input.insertText", {"text": "PRIVATE_TASK"})
+        self.client.socket.send.assert_called_once()
+        self.client.socket.recv.assert_not_called()
+        self.assertNotIn("PRIVATE", str(caught.exception))
+
+    def test_response_timeout_does_not_reexecute_renderer_operation(self):
+        from websocket import WebSocketTimeoutException
+
+        self.client.socket.recv.side_effect = WebSocketTimeoutException("PRIVATE")
+        with self.assertRaisesRegex(
+            WebSocketTimeoutException, "renderer_operation observe timed out"
+        ) as caught:
+            self.client.evaluate("observe", BINDING, "PRIVATE_MARKER")
+        self.client.socket.send.assert_called_once()
+        self.client.socket.recv.assert_called_once()
+        self.assertNotIn("PRIVATE", str(caught.exception))
+
+    def test_post_input_timeout_retains_unsafe_retry_guard(self):
+        from websocket import WebSocketTimeoutException
+
+        client = FakeClient("zcode")
+        client.call = lambda *args: (_ for _ in ()).throw(
+            WebSocketTimeoutException(
+                "DevTools command_response Input.insertText timed out"
+            )
+        )
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            patch.object(cdp, "ROOT", Path(temporary)),
+            patch("desktop_delivery.desktop_lock", contextlib.nullcontext),
+        ):
+            with self.assertRaises(WebSocketTimeoutException) as caught:
+                cdp.deliver_background(BINDING, MID, lambda harness: client)
+            self.assertFalse(caught.exception.retry_safe)
+            self.assertTrue(
+                (
+                    Path(temporary) / "data" / "background-delivery" / (MID + ".json")
+                ).exists()
+            )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

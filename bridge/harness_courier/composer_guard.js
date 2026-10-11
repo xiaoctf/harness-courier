@@ -84,7 +84,7 @@ function(request) {
           element.getAttribute('data-session-id') === request.sid && element.classList.contains('se'))
       : all('li[data-task-item-key]').filter(element =>
           (element.getAttribute('data-task-item-key') || '').endsWith(':' + request.sid));
-    if (rows.length !== 1) return {...result, error: 'bound_chat_not_unique_or_not_visible'};
+    if (rows.length !== 1) return {...result, target_rows: rows.length, error: 'bound_chat_not_unique_or_not_visible'};
     rows[0].click();
     return {selected: true};
   }

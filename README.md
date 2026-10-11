@@ -165,13 +165,21 @@ Adapt the templates to the project and place them in the client's supported inst
 
 ## Limitations
 
-`0.1.0` is a preview. The current source has 185 regression tests. Windows CI is configured for Python 3.11 and 3.13, Ruff and package builds; see [Actions](https://github.com/xiaoctf/harness-courier/actions) for each commit's actual result. Automated tests and isolated browser fixtures do not establish compatibility with every desktop application version.
+`0.1.0` is a preview. The current source has 220 regression tests. Windows CI is configured for Python 3.11 and 3.13, Ruff and package builds; see [Actions](https://github.com/xiaoctf/harness-courier/actions) for each commit's actual result. Automated tests and isolated browser fixtures do not establish compatibility with every desktop application version.
 
 - Receipts are stored in message records and queried by the sender. There is no complete scheduler that automatically wakes the original Codex chat with a result.
 - Explicit dispatch requests use a durable outbox and one delivery worker per mailbox. Priority jobs go first; jobs of the same priority use FIFO order when ready. Transient pre-input failures have bounded retries, while drafts and uncertain submissions are held for inspection. Real multi-project desktop concurrency still needs acceptance testing.
 - Local desktop tests with Kimi Code 1.0.4 and ZCode 3.14.4 verified real receipts, native priority consumption and activity observations from one originating Codex environment. Other versions, simultaneous independent Codex senders, Cua input and host approval behavior still need acceptance testing in target environments.
 
 Messages, databases, logs, local configuration, backups and third-party binaries are excluded from the source distribution.
+
+The latest reliability update validates MCP argument types before changing state,
+preserves receipt evidence over historical delivery errors, and bounds transport
+recovery. ZCode can select an unrendered bound session through a verified native
+workspace/session lookup, then recheck the composer before input. This fallback
+was tested locally on ZCode 3.14.4; unknown application contracts fail closed.
+It does not automatically replay exhausted jobs. Kimi activity still requires a
+verifiable rendered target, and intermittent renderer timeouts remain possible.
 
 ## Development and license
 

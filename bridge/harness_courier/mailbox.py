@@ -95,6 +95,7 @@ class Mailbox:
         ):
             raise BridgeError("Invalid peer metadata")
         with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
             previous = db.execute(
                 "SELECT guard_ready FROM peers WHERE harness=? AND session_id=?",
                 (harness, session_id),
@@ -102,7 +103,8 @@ class Mailbox:
             ready = bool(guard_ready or (previous and previous["guard_ready"]))
             db.execute(
                 """INSERT INTO peers VALUES(?,?,?,?,?,?,?) ON CONFLICT(harness,session_id)
-                       DO UPDATE SET title=excluded.title,cwd=excluded.cwd,seen_at=excluded.seen_at,
+                       DO UPDATE SET title=COALESCE(NULLIF(excluded.title,''),peers.title),
+                       cwd=COALESCE(NULLIF(excluded.cwd,''),peers.cwd),seen_at=excluded.seen_at,
                        guard_ready=excluded.guard_ready,online=excluded.online""",
                 (harness, session_id, title, cwd, now(), int(ready), int(online)),
             )
@@ -134,6 +136,10 @@ class Mailbox:
         """Bind a guarded online session; changing a target requires replace=True."""
         valid_id(alias, "alias")
         valid_id(session_id)
+        if type(replace) is not bool or (
+            title is not None and not isinstance(title, str)
+        ):
+            raise BridgeError("Invalid binding options")
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             peer = db.execute(
@@ -281,7 +287,9 @@ class Mailbox:
     ) -> list[dict[str, Any]]:
         """Fetch only this session's messages and mark queued items delivered."""
         valid_id(session_id)
-        if not isinstance(limit, int) or not 1 <= limit <= 10:
+        if message_id is not None:
+            valid_id(message_id, "message_id")
+        if type(limit) is not int or not 1 <= limit <= 10:
             raise BridgeError("Invalid receive limit")
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -316,19 +324,26 @@ class Mailbox:
                                   created_at, id LIMIT ?""",
                     (harness, session_id, limit),
                 ).fetchall()
+            received = []
             for row in rows:
+                delivered_at = (
+                    row["delivered_at"] if row["delivered_at"] is not None else now()
+                )
                 db.execute(
                     """UPDATE messages SET state=CASE WHEN state='queued' THEN 'delivered' ELSE state END,
                            delivered_at=COALESCE(delivered_at,?) WHERE id=?""",
-                    (now(), row["id"]),
+                    (delivered_at, row["id"]),
                 )
-            return [
-                {
-                    **dict(row),
-                    "state": "delivered" if row["state"] == "queued" else row["state"],
-                }
-                for row in rows
-            ]
+                received.append(
+                    {
+                        **dict(row),
+                        "state": "delivered"
+                        if row["state"] == "queued"
+                        else row["state"],
+                        "delivered_at": delivered_at,
+                    }
+                )
+            return received
 
     def acknowledge(
         self, harness: str, session_id: str, message_id: str
@@ -409,11 +424,10 @@ class Mailbox:
         priority = resolve_priority(self.path, priority)
         message = self.status(message_id)
         # SessionStart may deliver Hook context before the composer loads.
-        # An explicit retry can still wake that chat if GUI delivery failed;
-        # acknowledged/terminal messages must never be dispatched again.
-        if message["state"] != "queued" and not (
-            message["state"] == "delivered" and message["dispatch_error"]
-        ):
+        # Mailbox delivery is not desktop submission. An explicit dispatch may
+        # wake a fetched, unacknowledged message even without an earlier error.
+        # The transport journal prevents repeated or uncertain submissions.
+        if message["state"] not in ("queued", "delivered"):
             return message
         target = self.binding(message["alias"])
         if (target["harness"], target["session_id"], target["revision"]) != (
@@ -424,6 +438,12 @@ class Mailbox:
             raise BridgeError(
                 "Binding changed; queued message retains its original target"
             )
+        with self.connect() as db:
+            peer = db.execute(
+                "SELECT cwd FROM peers WHERE harness=? AND session_id=?",
+                (target["harness"], target["session_id"]),
+            ).fetchone()
+        target = {**target, "workspace_path": peer["cwd"] if peer else None}
 
         def guard():
             fresh = self.status(message_id)

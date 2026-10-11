@@ -102,18 +102,44 @@ def probe_native(client: Any, binding: dict) -> dict:
 def probe_target(binding: dict) -> dict:
     """Observe the unique verified renderer without navigating to the target."""
     from cdp_delivery import CdpClient
+    from websocket import WebSocketTimeoutException
 
+    stage = "endpoint"
+    connection_attempts = 0
+    observation_attempts = 0
     try:
         with CdpClient(binding["harness"]) as client:
+            stage = "renderer_list"
             targets = client.targets()
             if len(targets) != 1:
                 return {"available": False, "reason": "renderer_not_unique"}
-            client.attach(targets[0])
-            value = probe_native(client, binding)
+            # This path contains only the fixed read-only activity observer.
+            # Reconnect once after a handshake OR observation socket timeout.
+            # Share one retry budget, never retry any delivery operation, and
+            # retain unknown after both attempts fail. Returned schema/identity
+            # failures are observations, not permission to try other targets.
+            for attempt in range(2):
+                connection_attempts = attempt + 1
+                try:
+                    stage = "websocket_connect"
+                    client.attach(targets[0])
+                    stage = "native_observation"
+                    observation_attempts += 1
+                    value = probe_native(client, binding)
+                    break
+                except WebSocketTimeoutException:
+                    if attempt == 1:
+                        raise
             # An old adapter must not silently turn its delivery probe into idle.
             if value.get("activity_probe") is not True:
                 return {"available": False, "reason": "activity_adapter_unavailable"}
-            return {**value, "available": True, "observed_at": time.time()}
+            return {
+                **value,
+                "available": True,
+                "observed_at": time.time(),
+                "connection_attempts": connection_attempts,
+                "observation_attempts": observation_attempts,
+            }
     except Exception as exc:
         # A failing desktop read is unknown, never evidence of idle/offline.
         # Exception text may contain renderer/network data; return only a class.
@@ -121,6 +147,9 @@ def probe_target(binding: dict) -> dict:
             "available": False,
             "reason": "desktop_probe_unavailable",
             "error_type": type(exc).__name__,
+            "probe_stage": stage,
+            "connection_attempts": connection_attempts,
+            "observation_attempts": observation_attempts,
         }
 
 

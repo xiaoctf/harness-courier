@@ -86,12 +86,17 @@ class CdpClient:
             or not address.path.startswith("/devtools/page/")
         ):
             raise DriverError("Rejected nonlocal or non-page DevTools address")
-        self.socket = websocket.create_connection(
-            target["webSocketDebuggerUrl"],
-            timeout=5,
-            suppress_origin=True,
-            http_no_proxy=["127.0.0.1", "localhost"],
-        )
+        try:
+            self.socket = websocket.create_connection(
+                target["webSocketDebuggerUrl"],
+                timeout=5,
+                suppress_origin=True,
+                http_no_proxy=["127.0.0.1", "localhost"],
+            )
+        except websocket.WebSocketTimeoutException:
+            raise websocket.WebSocketTimeoutException(
+                "DevTools websocket_connect timed out"
+            ) from None
 
     def call(self, method, params):
         # This adapter never admits browser activation, navigation, OS input, or arbitrary callers.
@@ -118,16 +123,36 @@ class CdpClient:
                     "Only the verified composer Enter or Ctrl+Enter is admitted"
                 )
         self.sequence += 1
-        self.socket.send(
-            json.dumps({"id": self.sequence, "method": method, "params": params})
-        )
+        import websocket
+
+        try:
+            self.socket.send(
+                json.dumps({"id": self.sequence, "method": method, "params": params})
+            )
+        except websocket.WebSocketTimeoutException:
+            raise websocket.WebSocketTimeoutException(
+                f"DevTools command_send {method} timed out"
+            ) from None
         deadline = time.monotonic() + 6
         while time.monotonic() < deadline:
-            response = json.loads(self.socket.recv())
+            try:
+                response = json.loads(self.socket.recv())
+            except websocket.WebSocketTimeoutException:
+                raise websocket.WebSocketTimeoutException(
+                    f"DevTools command_response {method} timed out"
+                ) from None
             if response.get("id") != self.sequence:
                 continue
             if "error" in response:
                 # Do not include arbitrary renderer output in errors or logs.
+                if response["error"].get("message") in (
+                    "Execution context was destroyed.",
+                    "Cannot find context with specified id",
+                    "Inspected target navigated or closed",
+                ):
+                    failure = DriverError("DevTools renderer context changed")
+                    failure.context_changed = True
+                    raise failure
                 raise DriverError("DevTools command rejected")
             return response.get("result", {})
         raise DriverError("DevTools outcome unknown; verify receipt before retrying")
@@ -147,9 +172,21 @@ class CdpClient:
             }
         )
         expression = "(" + DOM_FUNCTION + ")(" + args + ")"
-        result = self.call(
-            "Runtime.evaluate", {"expression": expression, "returnByValue": True}
-        )
+        import websocket
+
+        try:
+            result = self.call(
+                "Runtime.evaluate", {"expression": expression, "returnByValue": True}
+            )
+        except websocket.WebSocketTimeoutException:
+            # Only the fixed internal operation name is retained, never the
+            # expression, wake text, URL or raw socket error.
+            operation_name = (
+                operation if re.fullmatch(r"[a-z_]{1,64}", operation) else "unknown"
+            )
+            raise websocket.WebSocketTimeoutException(
+                f"DevTools renderer_operation {operation_name} timed out"
+            ) from None
         if result.get("exceptionDetails"):
             raise DriverError("Background renderer operation failed")
         value = result.get("result", {}).get("value")
@@ -211,7 +248,31 @@ def _attach_bound_session(client, binding, marker, *, allow_busy_navigation=Fals
         select_op = (
             "select_authorized_busy_navigation" if allow_busy_navigation else "select"
         )
-        require(client.evaluate(select_op, binding, marker), "selected")
+        try:
+            selection = client.evaluate(select_op, binding, marker)
+            if (
+                binding["harness"] == "zcode"
+                and selection.get("error") == "bound_chat_not_unique_or_not_visible"
+                and selection.get("target_rows") == 0
+            ):
+                from session_navigation import select_zcode_session
+
+                selection = select_zcode_session(
+                    client, binding, allow_busy_navigation=allow_busy_navigation
+                )
+            require(selection, "selected")
+        except DriverError as exc:
+            if not getattr(exc, "context_changed", False):
+                raise
+            # Native workspace selection can replace the renderer before its
+            # promise replies. Do not replay selection: reconnect once and
+            # require the original target's mounted composer before any input.
+            refreshed = client.targets()
+            if len(refreshed) != 1:
+                raise DriverError(
+                    "Cannot verify one renderer after native selection"
+                ) from None
+            client.attach(refreshed[0])
         # App route selection is asynchronous; preserve strict identity
         # checks while allowing a bounded cold composer mount.
         deadline = time.monotonic() + 15

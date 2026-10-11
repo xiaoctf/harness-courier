@@ -79,9 +79,9 @@ def dispatch_fresh(
     if type(allow_busy_navigation) is not bool or type(priority) is not bool:
         raise ValueError("Delivery options must be booleans")
     current = box.status(message_id)
-    if current["state"] != "queued" and not (
-        current["state"] == "delivered" and current["dispatch_error"]
-    ):
+    # Inbox delivery alone does not prove a desktop wake was submitted.
+    # The fresh child retains the same-ID queue and transport journal guards.
+    if current["state"] not in ("queued", "delivered"):
         return current
     command = [
         sys.executable,

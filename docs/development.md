@@ -101,4 +101,27 @@ python bridge/verify_cdp_fixture.py
 
 本机 Kimi Code 1.0.4 / ZCode 3.14.4 的测试聊天已完成真实往返、原生优先消费、草稿保护和运行状态验收，包括 Kimi 原生插队跳过接收 Hook 后的真实收件，以及 ZCode 未选中聊天、旧 Stop 超期时的当前 idle 观察。最新真实 running → 回执终态 → idle 往返使用已选中的 ZCode 测试聊天；未选中 running 和侧栏未渲染目标的覆盖来自隔离 headless 夹具，不能混写为真实桌面验收。
 
-上述真实测试来自一个 Codex 发起环境。多个独立 Codex 并发、其他桌面版本、跨机器兼容、Cua 实际输入与宿主审批仍需分别验收。MCP 保存回执和提供状态查询，不主动唤醒 Codex；已配置的 Codex 心跳可以监督原消息 ID。公开副本应再次运行 Ruff、185 项回归、隔离 DOM 夹具和 wheel/sdist 构建，并检查 observer 资源打包；远端 Windows/Python 矩阵结果以当前提交 Actions 为准。
+上述真实测试来自一个 Codex 发起环境。多个独立 Codex 并发、其他桌面版本、跨机器兼容、Cua 实际输入与宿主审批仍需分别验收。MCP 保存回执和提供状态查询，不主动唤醒 Codex；已配置的 Codex 心跳可以监督原消息 ID。公开副本应再次运行 Ruff、当前全部回归、隔离 DOM 夹具和 wheel/sdist 构建，并检查 observer 资源打包；远端 Windows/Python 矩阵结果以当前提交 Actions 为准。
+
+## Reliability checks
+
+`test_reliability.py` exercises malformed MCP values before mutation, exact-ID
+inbox isolation, returned delivery timestamps, sparse Hook metadata, safe retry
+options, elapsed-attempt backoff, crash recovery and receipt precedence. Its
+mailboxes and transports are isolated; it never starts a desktop delivery.
+The existing queue suite also runs competing Windows worker processes against
+a temporary mailbox to check serialized, once-per-ID dispatch.
+
+MCP schemas are enforced at runtime, including primitive types, enums and finite
+numeric bounds. For example, `replace="false"` cannot replace a binding, and an
+explicit empty/null inbox message ID cannot silently fetch another pending task.
+The dedicated validator supports only the primitive shapes in the current tool
+catalog; extend both it and the tests when adding a different schema shape.
+
+`test_session_navigation.py` and the navigation scenarios in
+`verify_cdp_fixture.py` exercise the exact ZCode workspace/session fallback for
+an unrendered target. The isolated browser verifies one native selection and
+16 rejected scenarios, including drafts introduced during the async lookup,
+offline/remote/ambiguous targets, changed roots and missing busy-navigation
+authorization. A known renderer context replacement permits a fresh observation
+of the original target, never a repeated selection or unchecked text input.
