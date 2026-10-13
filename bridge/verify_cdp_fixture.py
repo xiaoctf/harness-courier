@@ -303,15 +303,15 @@ def main():
                         ),
                         (
                             "window.fixtureNativeItem.liveStatus='completed';window.fixtureNativeItem.taskId='wrong'",
-                            "target_not_unique_in_controller",
+                            "target_not_found_in_controller",
                         ),
                         (
                             "window.fixtureNativeItem.taskId='sess_fixture';window.fixtureNativeItem.workspacePath='E:/other'",
-                            "target_not_unique_in_controller",
+                            "target_not_found_in_controller",
                         ),
                         (
                             "window.fixtureNativeItem.workspacePath='E:/fixture';window.fixtureNativeItem.remoteSessionId='remote'",
-                            "target_not_unique_in_controller",
+                            "target_not_found_in_controller",
                         ),
                         (
                             "delete window.fixtureNativeItem.remoteSessionId;window.fixtureNativeItem.activity.phase='future_phase'",
@@ -511,6 +511,11 @@ def main():
             from verify_session_navigation import verify
 
             navigation_checks = verify(client)
+            from verify_kimi_session import verify as verify_kimi
+            from verify_runtime_index import verify as verify_index
+
+            index_checks = verify_index(client)
+            kimi_checks = verify_kimi(client)
             # Exercise native priority paths and exact queue identity in the DOM fixture.
             client.call(
                 "Runtime.evaluate",
@@ -753,6 +758,8 @@ def main():
             "results": results,
             "actual_dom_native_priority": True,
             "native_navigation_guards": navigation_checks,
+            "native_runtime_index_guards": index_checks,
+            "native_kimi_session_guards": kimi_checks,
             "actual_dom_false_busy_native_priority": True,
             "actual_dom_idle_priority_shortcut_fallback_once": True,
             "actual_dom_priority_old_queue_preserved": True,

@@ -477,11 +477,9 @@ class Mailbox:
                 delivery = deliver_wake(target, message_id, dispatch_guard=guard)
             error = None
         except Exception as exc:
-            delivery = {
-                "submitted": False,
-                "reason": str(exc),
-                "retry_safe": getattr(exc, "retry_safe", False),
-            }
+            from delivery_diagnostics import failure_details
+
+            delivery = failure_details(exc)
             error = str(exc)[:1000]
         with self.connect() as db:
             db.execute(

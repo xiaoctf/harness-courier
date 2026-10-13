@@ -49,6 +49,12 @@ ZCode 3.14.4 的目标不在当前可见列表时，会使用受保护的原生�
 
 WebSocket 超时原因现在区分 `websocket_connect`、`command_send`、`command_response` 和具体 `renderer_operation`，显示在 `dispatch_error` / `last_delivery.reason`。诊断只保留固定阶段、CDP 方法或内部操作名，不含消息正文、URL 或原始 socket 错误。新增诊断不自动重放命令，输入后的超时仍保留不确定提交保护。
 
+首次连接或输入前的固定 `observe` 读取超时时，可在本次派发内重连一次；必须重新核到唯一的原 renderer ID。这个预算由所有候选窗口共享，只重做读取。选择会话、插队、输入及提交不会因这条恢复规则重放；再次超时仍交给原有有限队列与提交不确定保护处理，不自动补发历史消息。
+
+同一次只读重连预算覆盖首次读取、导航后的读取和插队前读取，不因阶段切换重置。`last_delivery` 提供 `failure_stage`、`operation`、`elapsed_ms`、`read_reconnects` 与明确的 `error_code`；命令等待有总期限，不因无关 WebSocket 事件而延长。输入后或已有投递日志时不会标记为可安全自动重试。
+
+队列依据结构化错误码决定是否重试；兼容旧错误文本时只判断主错误，不扫描 `route` 诊断 JSON。`draft_empty=true` 不再误触“已有草稿”的保护。真正的草稿、附件、身份冲突和提交不确定仍暂停；调用方的 `allow_busy_navigation=false` 保持有效。
+
 ## 发送与原生插队
 
 示例：

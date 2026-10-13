@@ -45,13 +45,26 @@ A recent Stop Hook with unfinished delivered/ACKed receipts produces
 `stop_observed_with_unfinished_messages`. This requests investigation without
 claiming the agent is definitely idle or marking any task complete.
 
-Kimi sidebar observations are grounded in the SessionRow implementation tested
+Kimi Code 1.0.4 queries its current app client's `getSession(id)` metadata API
+with a three-second deadline and cancellation. The response must match the exact
+global session ID and provide boolean busy/main-turn/archive fields and a known
+pending-interaction value. No prompt, title, credentials or transcript is returned.
+`native_exact_session_api` supports hidden chats and distinguishes a main turn
+from background work; it also reports pending approval and user input. An archived
+target reports `session_closed_observed` with `bound_session_archived`. A backend
+404 for the exact ID produces `bound_session_not_found`, never a guessed replacement.
+These observations supersede old Hooks. The API is private and version-specific;
+unsupported schemas remain unverified. `registration_workspace_mismatch` means a
+Hook recorded a different cwd (sometimes the app launch directory); the adapter
+does not rewrite that registration or discard the globally addressed observation.
+
+Kimi sidebar fallback observations are grounded in the SessionRow implementation tested
 on desktop 1.0.4: a running spinner, idle timestamp, or unread indicator has a
 specific state meaning. The adapter verifies one exact visible session row and
 its active-row structure; archived rows, duplicates, mixed indicators, rename
 inputs and unsupported markup do not qualify. This supports background-chat
 queries without selecting them. If the sidebar is collapsed or the target is
-not rendered, the probe cannot make that observation. Kimi Stop/progress Hooks
+not rendered, this fallback cannot make that observation. Kimi Stop/progress Hooks
 are optional evidence: this local desktop/backend combination did not emit
 them during the live test, so the adapter does not depend on them.
 
@@ -75,7 +88,37 @@ or `target_not_unique_in_controller`. Unsupported desktop versions may change
 this private service binding and must be revalidated. Offline or conflicting
 state is reported for investigation rather than replaced by a stale Stop Hook.
 
-`native_exact_session_controller` identifies this evidence. `waiting_for_input`,
+When the complete task index has no activity overlay, the adapter obtains a
+fresh sessions-index snapshot through the same current service context. It uses
+`zcodeAgentService.subscribeSessionsIndexV4` with `runtimePolicy=existing-only`
+and a unique subscriber scope. It accepts only its own complete snapshot with
+matching subscription, topic, workspace, epoch and exact session identity.
+Historical `listSessions` status is never used: that interface can default to
+`idle` without reading current activity. Malformed overlays are not replaced
+with a fallback. The shared query deadline is three seconds; owned subscription
+cleanup adds at most half a second to the probe. The listener and owned
+subscription are removed, including a subscription whose ACK arrives after
+timeout. Desktop subscriptions are left intact.
+
+`native_exact_session_controller` identifies the task-overlay evidence;
+`native_exact_session_index` identifies the owned runtime-index snapshot.
+
+If the existing-only ZCode query reports no workspace runtime, `runtime_availability`
+is `not_running`, `turn_state` remains `unknown`, and `attention` includes
+`workspace_runtime_not_running`. A cached composer or old Hook cannot replace this
+current evidence. Open the exact workspace/session before an authorized dispatch;
+reconnecting Codex MCP alone does not start a ZCode workspace runtime. This says
+nothing about detached training or other background processes. A missing target,
+an archived chat and a missing workspace runtime require different recovery actions;
+status queries never perform those actions.
+`binding_peer_state` separately reports the last peer registration as
+`last_seen_online`, `last_seen_closed` or `unregistered`. That registration
+does not override current native activity. A closed registration without current
+evidence prompts reopening the exact session or explicitly choosing a replacement;
+the bridge never guesses a replacement from its title. An absent exact task
+reports `target_not_found_in_controller`, distinct from an ambiguous task.
+
+`waiting_for_input`,
 `native_turn_error`, `native_source_offline` and `native_state_conflict` are
 actionable attention signals; they do not create a result or approve anything.
 The native `has_background_work` flag is separate from `background_jobs`: it

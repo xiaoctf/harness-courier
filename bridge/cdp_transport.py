@@ -16,6 +16,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlsplit
 from urllib.request import ProxyHandler, build_opener
 
+from delivery_diagnostics import DeliveryTrace
 from harness_courier.app_registry import APPS, verified_port
 from harness_courier.errors import DriverError
 from wake_protocol import wake_text
@@ -125,6 +126,8 @@ class CdpClient:
         self.sequence += 1
         import websocket
 
+        deadline = time.monotonic() + 6
+        self.socket.settimeout(5)
         try:
             self.socket.send(
                 json.dumps({"id": self.sequence, "method": method, "params": params})
@@ -133,8 +136,9 @@ class CdpClient:
             raise websocket.WebSocketTimeoutException(
                 f"DevTools command_send {method} timed out"
             ) from None
-        deadline = time.monotonic() + 6
         while time.monotonic() < deadline:
+            # Unrelated events must not reset the command's total deadline.
+            self.socket.settimeout(max(0.001, min(5, deadline - time.monotonic())))
             try:
                 response = json.loads(self.socket.recv())
             except websocket.WebSocketTimeoutException:
@@ -155,7 +159,9 @@ class CdpClient:
                     raise failure
                 raise DriverError("DevTools command rejected")
             return response.get("result", {})
-        raise DriverError("DevTools outcome unknown; verify receipt before retrying")
+        raise websocket.WebSocketTimeoutException(
+            f"DevTools command_response {method} timed out"
+        )
 
     def evaluate(self, operation, binding, marker=""):
         if operation == "agent_observe":
@@ -222,11 +228,15 @@ def require(value, key):
             if k in value
         }
         suffix = " | route=" + json.dumps(details, sort_keys=True) if details else ""
-        raise DriverError(
+        failure = DriverError(
             "Background delivery stopped: "
             + value.get("error", key + " not verified")
             + suffix
         )
+        code = value.get("error")
+        if isinstance(code, str) and re.fullmatch(r"[a-z_]{1,80}", code):
+            failure.error_code = code
+        raise failure
 
 
 def _attach_bound_session(client, binding, marker, *, allow_busy_navigation=False):
@@ -234,8 +244,10 @@ def _attach_bound_session(client, binding, marker, *, allow_busy_navigation=Fals
     targets = client.targets()
     observations = []
     for target in targets:
-        client.attach(target)
-        observations.append((target, client.evaluate("observe", binding, marker)))
+        observation = client.observe_before_input(
+            binding, marker, stage="initial_observation", target=target
+        )
+        observations.append((client.target, observation))
     exact = [
         t for t, o in observations if o.get("matches") and o.get("editor_count") == 1
     ]
@@ -244,6 +256,7 @@ def _attach_bound_session(client, binding, marker, *, allow_busy_navigation=Fals
     elif len(exact) > 1:
         raise DriverError("Multiple desktop windows expose the bound session")
     elif len(targets) == 1:
+        client.stage = "session_selection"
         client.attach(targets[0])
         select_op = (
             "select_authorized_busy_navigation" if allow_busy_navigation else "select"
@@ -277,11 +290,15 @@ def _attach_bound_session(client, binding, marker, *, allow_busy_navigation=Fals
         # checks while allowing a bounded cold composer mount.
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
-            observed = client.evaluate("observe", binding, marker)
+            observed = client.observe_before_input(
+                binding, marker, stage="post_selection_observation"
+            )
             if observed.get("matches") and observed.get("editor_count") == 1:
                 break
             time.sleep(0.15)
         require(observed, "matches")
+        if observed.get("editor_count") != 1:
+            require({"error": "composer_unavailable_or_ambiguous"}, "ready")
     else:
         raise DriverError(
             "Cannot identify one bound desktop window; open the intended chat first"
@@ -439,14 +456,19 @@ def _deliver_background(
                         "Recovery already attempted; inspect receipt, no automatic resend"
                     )
                 staged = True
-        with client_factory(binding["harness"]) as client:
+        with client_factory(binding["harness"]) as native_client:
+            client = DeliveryTrace(native_client)
             _attach_bound_session(
                 client, binding, marker, allow_busy_navigation=allow_busy_navigation
             )
             if dispatch_guard is not None and not dispatch_guard():
                 return {"submitted": False, "skipped": "receiver_already_acknowledged"}
             priority_state = (
-                client.evaluate("observe", binding, marker) if priority else {}
+                client.observe_before_input(
+                    binding, marker, stage="priority_observation"
+                )
+                if priority
+                else {}
             )
             if priority and (
                 not priority_state.get("matches")
@@ -454,6 +476,7 @@ def _deliver_background(
             ):
                 raise DriverError("Priority target identity changed")
             priority_active = priority and priority_state.get("generating") is True
+            client.stage = "composer_focus"
             # Normal delivery sends only a wake; explicit recovery may use task text.
             if staged:
                 # No new typing or draft mutation: only the exact, unsent
@@ -493,7 +516,9 @@ def _deliver_background(
                         json.dump(record, handle)
                         handle.flush()
                         os.fsync(handle.fileno())
+                client.stage = "input_insert"
                 client.call("Input.insertText", {"text": marker})
+            client.stage = "composer_ready"
             _await_composer_ready(client, binding, marker)
             journal.parent.mkdir(parents=True, exist_ok=True)
             saved = {
@@ -508,6 +533,7 @@ def _deliver_background(
             journal.write_text(json.dumps(saved), encoding="utf-8")
             # A lost response after this point must never cause an automatic resubmit.
             priority_action = None
+            client.stage = "submit"
             if priority and binding["harness"] == "kimi":
                 from priority_delivery import steer_kimi
 
@@ -524,12 +550,14 @@ def _deliver_background(
                 _submit_composer(client, binding, marker)
             # A click is not application acceptance. Require the verified
             # composer to clear, while still leaving receipt proof to the Hook.
+            client.stage = "post_submit_observation"
             _confirm_composer_clear(client, binding, marker)
             if priority and binding["harness"] == "zcode":
                 from priority_delivery import promote_zcode
 
                 saved["phase"] = "priority_attempt"
                 journal.write_text(json.dumps(saved), encoding="utf-8")
+                client.stage = "priority_promote"
                 promoted = promote_zcode(
                     client, binding, marker, require_queue=priority_active
                 )
@@ -568,5 +596,8 @@ def deliver_background(binding, message_id, client_factory=CdpClient, **options)
             binding, message_id, client_factory, before_input=mark_input, **options
         )
     except Exception as exc:
-        exc.retry_safe = not input_started
+        # A prior/recovery journal is also an input boundary, including resumed
+        # staged drafts which do not call mark_input during this attempt.
+        journal = ROOT / "data" / "background-delivery" / (message_id + ".json")
+        exc.retry_safe = not input_started and not journal.exists()
         raise

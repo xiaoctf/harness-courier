@@ -55,7 +55,7 @@ class NavigationTests(unittest.TestCase):
         self.observation(0)
 
         def select(client, binding, **options):
-            self.assertIs(client, self.client)
+            self.assertIs(client.client, self.client)
             self.assertEqual(binding, self.binding)
             self.assertTrue(options["allow_busy_navigation"])
             self.client.matches = True

@@ -38,6 +38,25 @@ class ActivityTests(unittest.TestCase):
             **kwargs,
         )
 
+    def test_closed_registration_has_specific_guidance_without_assuming_idle(self):
+        self.box.register("kimi", "kimi-A", "", "", True, False)
+        value = self.query()
+        self.assertEqual(value["binding_peer_state"], "last_seen_closed")
+        self.assertEqual(value["turn_state"], "unknown")
+        self.assertIn("Reopen that exact session", value["next_action"])
+
+    def test_native_live_evidence_overrides_old_closed_registration(self):
+        self.box.register("kimi", "kimi-A", "", "", True, False)
+        value = self.query(
+            {
+                "available": True,
+                "target_selected": True,
+                "composer_verified": True,
+                "generating": True,
+            }
+        )
+        self.assertEqual(value["turn_state"], "running")
+
     def test_peer_online_and_ack_are_not_running(self):
         mid = self.box.send("test", "owned communication test")["id"]
         self.box.receive("kimi", "kimi-A", mid)
@@ -46,6 +65,49 @@ class ActivityTests(unittest.TestCase):
         self.assertEqual(state["turn_state"], "unknown")
         self.assertEqual(state["message_counts"]["acknowledged"], 1)
         self.assertIn("progress_needs_verification", state["attention"])
+
+    def test_kimi_metadata_observes_hidden_session_and_reports_cwd_mismatch(self):
+        native = {
+            "available": True,
+            "target_selected": False,
+            "session_activity": {
+                "verified": True,
+                "session_id": "kimi-A",
+                "workspace_path": "E:/fixture",
+                "turn_state": "running",
+                "source_availability": "online",
+                "observation_source": "kimi_session_api",
+                "archived": False,
+            },
+        }
+        for turn in ("idle", "running", "waiting_for_input", "approval_requested"):
+            native["session_activity"]["turn_state"] = turn
+            value = self.query(native)
+            self.assertEqual(value["turn_state"], turn)
+            self.assertEqual(value["turn_evidence"], "native_exact_session_api")
+            self.assertIn("registration_workspace_mismatch", value["attention"])
+        native["session_activity"].update(
+            archived=True, turn_state="session_closed_observed"
+        )
+        value = self.query(native)
+        self.assertIn("bound_session_archived", value["attention"])
+        self.assertEqual(value["turn_state"], "session_closed_observed")
+
+    def test_kimi_missing_target_does_not_revive_old_stop_or_permission(self):
+        native = {
+            "available": True,
+            "session_activity": {
+                "verified": False,
+                "reason": "target_not_found_in_kimi",
+                "session_id": "kimi-A",
+            },
+        }
+        for event in ("Stop", "PermissionRequest"):
+            record_event(self.box, "kimi", "kimi-A", event)
+            value = self.query(native)
+            self.assertEqual(value["turn_state"], "unknown")
+            self.assertEqual(value["turn_evidence"], "native_target_missing")
+            self.assertIn("bound_session_not_found", value["attention"])
 
     def test_stop_before_end_does_not_fake_idle_or_result(self):
         mid = self.box.send("test", "owned communication test")["id"]
@@ -227,6 +289,14 @@ class ActivityTests(unittest.TestCase):
             self.assertEqual(state["turn_evidence"], "native_exact_session_controller")
             self.assertGreater(state["last_event_age_seconds"], 300)
 
+    def test_runtime_index_has_distinct_evidence_without_background_claim(self):
+        native = self.zcode_native(observation_source="sessions_index")
+        native["session_activity"]["has_background_work"] = False
+        value = self.query(native)
+        self.assertEqual(value["turn_state"], "idle")
+        self.assertEqual(value["turn_evidence"], "native_exact_session_index")
+        self.assertEqual(value["background_jobs"], "unknown")
+
     def test_zcode_exact_controller_identity_required(self):
         for changed in (
             {"verified": False},
@@ -242,6 +312,37 @@ class ActivityTests(unittest.TestCase):
         native = self.zcode_native()
         self.binding = self.box.binding("test")
         self.assertEqual(self.query(native)["turn_state"], "unknown")
+
+    def test_runtime_not_running_overrides_stale_composer_and_hook(self):
+        native = self.zcode_native(
+            verified=False,
+            reason="runtime_not_running",
+            runtime_availability="not_running",
+        )
+        native.update(target_selected=True, composer_verified=True, generating=False)
+        for event in ("Stop", "PermissionRequest", "SessionEnd"):
+            record_event(self.box, "zcode", "zcode-A", event)
+            value = self.query(native)
+            self.assertEqual(value["turn_state"], "unknown")
+            self.assertEqual(value["runtime_availability"], "not_running")
+            self.assertEqual(value["turn_evidence"], "native_runtime_not_running")
+            self.assertIn("workspace_runtime_not_running", value["attention"])
+            self.assertIn(
+                "reconnecting Codex MCP alone does not start it", value["next_action"]
+            )
+            self.assertEqual(value["background_jobs"], "unknown")
+
+    def test_runtime_absence_requires_exact_identity(self):
+        for changed in ({"session_id": "other"}, {"workspace_path": "E:/other"}):
+            native = self.zcode_native(
+                verified=False,
+                reason="runtime_not_running",
+                runtime_availability="not_running",
+                **changed,
+            )
+            value = self.query(native)
+            self.assertEqual(value["runtime_availability"], "unknown")
+            self.assertNotIn("workspace_runtime_not_running", value["attention"])
 
     def test_probe_gets_frozen_recipient_workspace(self):
         native = self.zcode_native()

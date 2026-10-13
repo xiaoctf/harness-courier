@@ -186,7 +186,7 @@ def inspect_target(
             else None
         )
         peer = db.execute(
-            "SELECT cwd FROM peers WHERE harness=? AND session_id=?",
+            "SELECT cwd,online FROM peers WHERE harness=? AND session_id=?",
             (binding["harness"], binding["session_id"]),
         ).fetchone()
         counts = dict(
@@ -246,13 +246,37 @@ def inspect_target(
     session = session if isinstance(session, dict) else {}
     native_session = (
         native.get("available")
-        and binding["harness"] == "zcode"
         and session.get("verified") is True
         and session.get("session_id") == binding["session_id"]
         and session.get("source_availability") == "online"
-        and session.get("workspace_path") == (peer["cwd"] if peer else None)
+        and (
+            binding["harness"] == "zcode"
+            and session.get("workspace_path") == (peer["cwd"] if peer else None)
+            or binding["harness"] == "kimi"
+            and session.get("observation_source") == "kimi_session_api"
+        )
         and session.get("turn_state")
-        in ("running", "idle", "approval_requested", "waiting_for_input")
+        in (
+            "running",
+            "idle",
+            "approval_requested",
+            "waiting_for_input",
+            *(["session_closed_observed"] if binding["harness"] == "kimi" else []),
+        )
+    )
+    native_missing = (
+        native.get("available")
+        and binding["harness"] == "kimi"
+        and session.get("session_id") == binding["session_id"]
+        and session.get("reason") == "target_not_found_in_kimi"
+    )
+    runtime_unavailable = (
+        native.get("available")
+        and binding["harness"] == "zcode"
+        and session.get("reason") == "runtime_not_running"
+        and session.get("runtime_availability") == "not_running"
+        and session.get("session_id") == binding["session_id"]
+        and session.get("workspace_path") == (peer["cwd"] if peer else None)
     )
     conflict = (
         selected
@@ -262,7 +286,7 @@ def inspect_target(
             or (session["turn_state"] == "idle" and native["generating"])
         )
     )
-    controller_conflict = binding["harness"] == "zcode" and session.get("reason") in (
+    controller_conflict = native.get("available") and session.get("reason") in (
         "native_activity_conflict",
         "target_source_offline",
     )
@@ -271,11 +295,21 @@ def inspect_target(
         if controller_conflict and session.get("reason") == "target_source_offline"
         else "native_state_conflict"
     )
-    if conflict or controller_conflict:
+    if native_missing:
+        evidence = "native_target_missing"
+    elif runtime_unavailable:
+        evidence = "native_runtime_not_running"
+    elif conflict or controller_conflict:
         evidence = native_issue
     elif native_session:
         turn_state = session["turn_state"]
-        evidence = "native_exact_session_controller"
+        evidence = (
+            "native_exact_session_api"
+            if session.get("observation_source") == "kimi_session_api"
+            else "native_exact_session_index"
+            if session.get("observation_source") == "sessions_index"
+            else "native_exact_session_controller"
+        )
     elif selected:
         turn_state = "running" if native["generating"] else "idle"
         evidence = "native_exact_session"
@@ -304,6 +338,8 @@ def inspect_target(
         and not native_session
         and not conflict
         and not controller_conflict
+        and not runtime_unavailable
+        and not native_missing
     ):
         turn_state, evidence = "approval_requested", "receiver_hook"
     progress_age = (
@@ -313,6 +349,20 @@ def inspect_target(
     )
     unfinished = counts.get("delivered", 0) + counts.get("acknowledged", 0)
     attention = []
+    if native_missing:
+        attention.append("bound_session_not_found")
+    if native_session and session.get("archived") is True:
+        attention.append("bound_session_archived")
+    if native_session and binding["harness"] == "kimi" and peer:
+        # Hook cwd can be the desktop launch directory; Kimi session IDs are
+        # global, so report that mismatch without discarding exact live state.
+        def path_key(value):
+            return str(value).replace("/", "\\").rstrip("\\").casefold()
+
+        if path_key(session.get("workspace_path")) != path_key(peer["cwd"]):
+            attention.append("registration_workspace_mismatch")
+    if runtime_unavailable:
+        attention.append("workspace_runtime_not_running")
     if conflict or controller_conflict:
         attention.append(native_issue)
     if turn_state == "waiting_for_input":
@@ -339,6 +389,16 @@ def inspect_target(
     )
     if turn_state == "unknown":
         next_action = "Read the native observation reason and verify the app endpoint or exact workspace/session binding. Do not infer stopped from silence."
+        if native_missing:
+            next_action = "Kimi's current backend cannot find the exact bound session ID. Verify that the intended session still exists in this backend; never guess a replacement by title or replay old messages."
+        elif runtime_unavailable:
+            next_action = "ZCode is open but this exact workspace has no running agent runtime. Open the bound session in that workspace before a new authorized dispatch; reconnecting Codex MCP alone does not start it. Inspect original receipts before recovery; independent background jobs remain unknown."
+        elif peer and peer["online"] == 0:
+            next_action = "The bound peer's last registration was closed. Reopen that exact session or explicitly bind a chosen replacement; never infer a replacement from its title."
+        elif session.get("reason") == "target_not_found_in_controller":
+            next_action = "The bound session is absent from the complete workspace index. Verify whether it was deleted or moved; never retarget by title."
+    if native_session and session.get("archived") is True:
+        next_action = "The exact bound Kimi session is archived. Restore it explicitly before dispatch, or explicitly bind a chosen replacement; old receipts are retained."
     return {
         "alias": binding["alias"],
         "harness": binding["harness"],
@@ -347,6 +407,16 @@ def inspect_target(
         "observed_at": observed,
         "turn_state": turn_state,
         "turn_evidence": evidence,
+        "runtime_availability": "not_running"
+        if runtime_unavailable
+        else "running"
+        if native_session and binding["harness"] == "zcode"
+        else "unknown",
+        "binding_peer_state": "last_seen_online"
+        if peer and peer["online"]
+        else "last_seen_closed"
+        if peer
+        else "unregistered",
         "native": native,
         "last_hook": event,
         "last_event_age_seconds": event_age,

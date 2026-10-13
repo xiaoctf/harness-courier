@@ -183,6 +183,83 @@ class QueueTests(unittest.TestCase):
         queue.run_one(self.box, deliver=self.success)
         self.assertEqual(queue.queue_status(self.box, mid)["attempts"], 2)
 
+    def test_busy_route_metadata_retries_same_id_without_enabling_navigation(self):
+        mid = self.job(allow_busy_navigation=False)
+        reason = (
+            "Background delivery stopped: current_conversation_generating"
+            ' | route={"draft_empty": true, "editor_count": 1, "matches": false}'
+        )
+        queue.run_one(self.box, deliver=self.error(reason, True))
+        state = queue.queue_status(self.box, mid)
+        self.assertEqual(state["state"], "pending")
+        self.assertEqual(state["allow_busy_navigation"], 0)
+        self.due()
+        dispatch = Mock(side_effect=self.success)
+        queue.run_one(self.box, deliver=dispatch)
+        dispatch.assert_called_once_with(
+            mid, priority=True, allow_busy_navigation=False
+        )
+
+    def test_retry_classifier_preserves_real_guards_and_explicit_codes(self):
+        for reason in (
+            'existing_draft | route={"timed out":true}',
+            "Connection timed out; identity changed",
+            "journal outcome uncertain; timed out",
+            "existing_attachment_draft",
+            None,
+        ):
+            self.assertFalse(queue._retryable({"reason": reason, "retry_safe": True}))
+        for code in ("existing_draft", "session_identity_or_composer_mismatch", "new"):
+            self.assertFalse(
+                queue._retryable(
+                    {"reason": "timed out", "retry_safe": True, "error_code": code}
+                )
+            )
+        self.assertTrue(
+            queue._retryable(
+                {"error_code": "current_conversation_generating", "retry_safe": True}
+            )
+        )
+        self.assertFalse(
+            queue._retryable({"error_code": "transport_timeout", "retry_safe": False})
+        )
+
+    def test_real_guard_code_survives_mailbox_and_queue_diagnostics(self):
+        from delivery_diagnostics import DeliveryTrace
+        from websocket import WebSocketTimeoutException
+
+        mid = self.job()
+        client = FakeClient("kimi")
+        client.evaluate = Mock(side_effect=WebSocketTimeoutException("fixed timeout"))
+        trace = DeliveryTrace(client)
+        try:
+            trace.observe_before_input(
+                BINDING, "", stage="priority_observation", target={"id": "0"}
+            )
+        except WebSocketTimeoutException as exc:
+            exc.retry_safe = True
+            failure = exc
+        with patch("cdp_delivery.deliver_background", side_effect=failure):
+            queue.run_one(self.box)
+        job = queue.queue_status(self.box, mid)
+        self.assertEqual(job["state"], "pending")
+        self.assertEqual(job["last_delivery"]["failure_stage"], "priority_observation")
+        self.assertEqual(job["last_delivery"]["read_reconnects"], 1)
+        self.assertEqual(job["last_delivery"]["error_code"], "transport_timeout")
+
+        for error, retryable in (
+            ("current_conversation_generating", True),
+            ("existing_draft", False),
+        ):
+            with self.assertRaises(DriverError) as caught:
+                cdp.require({"error": error, "draft_empty": True}, "selected")
+            caught.exception.retry_safe = True
+            from delivery_diagnostics import failure_details
+
+            self.assertEqual(
+                queue._retryable(failure_details(caught.exception)), retryable
+            )
+
     def test_safe_retry_budget_is_bounded(self):
         mid = self.job()
         for _ in range(queue.MAX_ATTEMPTS):
@@ -295,7 +372,7 @@ class QueueTests(unittest.TestCase):
             spawn.call_args.args[0],
             [
                 sys.executable,
-                str(ROOT / "dispatch_worker.py"),
+                str(queue.ROOT / "dispatch_worker.py"),
                 "--db",
                 str(self.box.path.resolve()),
             ],

@@ -20,7 +20,7 @@ python scripts/prepare_release.py --output C:\path\to\new-release-directory
 
 ## 验证和限制
 
-本地检查需包括 Ruff、当前 220 项回归、wheel/sdist 构建，以及公开副本再次运行测试。wheel 必须包含 `composer_guard.js`、`agent_observer.js`、`agent_activity.py`、`session_navigation.py`、`zcode_navigation.js`、`mcp_validation.py`、`wake_protocol.py`、`priority_policy.py`、`dispatch_runner.py`、`dispatch_queue.py`、`dispatch_worker.py`、`priority_delivery.py`、新旧 Python 包和许可证。GitHub Actions 工作流配置了 Windows / Python 3.11 与 3.13 的检查；每次提交的实际结果见 [Actions](https://github.com/xiaoctf/harness-courier/actions)。本地结果不替代该提交的远程 CI 结果。
+本地检查需包括 Ruff、当前 242 项回归、wheel/sdist 构建，以及公开副本再次运行测试。wheel 必须包含 `composer_guard.js`、`agent_observer.js`、`agent_activity.py`、`delivery_diagnostics.py`、`session_navigation.py`、`zcode_navigation.js`、`mcp_validation.py`、`wake_protocol.py`、`priority_policy.py`、`dispatch_runner.py`、`dispatch_queue.py`、`dispatch_worker.py`、`priority_delivery.py`、新旧 Python 包和许可证。GitHub Actions 工作流配置了 Windows / Python 3.11 与 3.13 的检查；每次提交的实际结果见 [Actions](https://github.com/xiaoctf/harness-courier/actions)。本地结果不替代该提交的远程 CI 结果。
 
 本版本尚无跨机器真实桌面兼容性验收、自动审批发送验收、完整多项目调度或自动返回原 Codex 聊天。源码和配置准备完成不等于这些能力完成。
 

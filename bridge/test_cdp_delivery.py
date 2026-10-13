@@ -627,6 +627,19 @@ class TransportTimeoutTests(unittest.TestCase):
                 ).exists()
             )
 
+    def test_unrelated_events_do_not_extend_the_command_deadline(self):
+        from websocket import WebSocketTimeoutException
+
+        self.client.socket.recv.return_value = '{"method":"Runtime.event"}'
+        with patch.object(
+            cdp.time, "monotonic", side_effect=[0, 0.1, 0.2, 5.7, 5.8, 6.1]
+        ):
+            with self.assertRaises(WebSocketTimeoutException):
+                self.client.call("Runtime.evaluate", {"expression": "0"})
+        self.assertEqual(self.client.socket.recv.call_count, 2)
+        self.client.socket.send.assert_called_once()
+        self.assertAlmostEqual(self.client.socket.settimeout.call_args.args[0], 0.2)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

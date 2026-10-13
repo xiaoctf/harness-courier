@@ -17,7 +17,7 @@ Harness Courier binds a readable alias to a real desktop session ID. Messages st
 - **Deliver in the background:** use a verified local CDP endpoint to submit recipient-scoped wake metadata. A receiver Hook or exact-ID receiver inbox call fetches the message body, including when Kimi steering skips a Hook.
 - **Protect active work:** check the target session, drafts, attachments and busy state before sending. Preserve uncertain submission records to guard against duplicate sends.
 - **Return a result:** receivers acknowledge the message and report success or failure through MCP. Codex queries the original message ID.
-- **Observe agent activity:** read current turn state separately from receipts, including supported ZCode background-session metadata and Kimi sidebar observations.
+- **Observe agent activity:** read current turn state separately from receipts, including supported ZCode and Kimi session metadata without selecting the chat.
 - **Add optional computer control:** use the Cua background policy and registration helpers separately from message delivery.
 
 This is a community integration for Windows desktop applications. Codex, Kimi Code, ZCode and Cua are independent products; their names do not imply official endorsement.
@@ -128,6 +128,9 @@ with unfinished receipts needs attention; idle never marks a message completed.
 Queries do not switch chats or retry tasks. Supported ZCode versions expose exact-session
 controller state even when the target chat is unselected or absent from the rendered
 sidebar. An old Stop event does not invalidate that current observation.
+Kimi Code 1.0.4 also supports an exact-session metadata query for hidden chats;
+missing and archived targets are reported separately. A missing ZCode workspace
+runtime is distinguished from a desktop connection failure.
 See [Agent activity](docs/agent-status.md)
 for Hook loading, freshness and background-job limits.
 
@@ -165,7 +168,7 @@ Adapt the templates to the project and place them in the client's supported inst
 
 ## Limitations
 
-`0.1.0` is a preview. The current source has 220 regression tests. Windows CI is configured for Python 3.11 and 3.13, Ruff and package builds; see [Actions](https://github.com/xiaoctf/harness-courier/actions) for each commit's actual result. Automated tests and isolated browser fixtures do not establish compatibility with every desktop application version.
+`0.1.0` is a preview. The current source has 242 regression tests. Windows CI is configured for Python 3.11 and 3.13, Ruff and package builds; see [Actions](https://github.com/xiaoctf/harness-courier/actions) for each commit's actual result. Automated tests and isolated browser fixtures do not establish compatibility with every desktop application version.
 
 - Receipts are stored in message records and queried by the sender. There is no complete scheduler that automatically wakes the original Codex chat with a result.
 - Explicit dispatch requests use a durable outbox and one delivery worker per mailbox. Priority jobs go first; jobs of the same priority use FIFO order when ready. Transient pre-input failures have bounded retries, while drafts and uncertain submissions are held for inspection. Real multi-project desktop concurrency still needs acceptance testing.

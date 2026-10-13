@@ -95,9 +95,9 @@ python bridge/verify_cdp_fixture.py
 
 ## 2026-10-08 收件与运行状态增量
 
-当前共 185 项回归。`priority_policy.py` 在明确派发的入队、worker 取件和直接投递处读取管理员强制策略。`wake_protocol.py` 定义接收会话限定的唤醒元数据，接收 Hook 与原生插队漏 Hook 时的精确 ID 取件共用身份校验；传输不输入业务正文。
+当前共 242 项回归。`priority_policy.py` 在明确派发的入队、worker 取件和直接投递处读取管理员强制策略。`wake_protocol.py` 定义接收会话限定的唤醒元数据，接收 Hook 与原生插队漏 Hook 时的精确 ID 取件共用身份校验；传输不输入业务正文。
 
-`agent_activity.py` 将当前模型轮次观察与消息回执分别报告。只读 `agent_observer.js` 每次查询从包资源加载，与投递脚本分离；支持 Kimi 已渲染的精确侧栏会话及 ZCode 工作目录限定的 Host Controller 精确会话查询。ZCode 不依赖目标聊天选中或侧栏渲染，不以历史 React 缓存、旧 Stop 或离线元数据冒充当前状态。不支持、超时、身份冲突或未知 schema 保持 unknown；独立后台作业状态仍未知。
+`agent_activity.py` 将当前模型轮次观察与消息回执分别报告。只读 `agent_observer.js` 每次查询从包资源加载，与投递脚本分离；支持 Kimi 精确会话元数据 API（可见侧栏为备用证据）及 ZCode 工作目录限定的 Host Controller 精确会话查询。查询不依赖目标聊天选中，不以历史 React 缓存、旧 Stop 或离线元数据冒充当前状态。不支持、超时、身份冲突或未知 schema 保持 unknown；独立后台作业状态仍未知。`delivery_diagnostics.py` 只为输入前固定读取提供一次共享重连预算，并保留失败阶段；不会重放输入、提交或原生插队。
 
 本机 Kimi Code 1.0.4 / ZCode 3.14.4 的测试聊天已完成真实往返、原生优先消费、草稿保护和运行状态验收，包括 Kimi 原生插队跳过接收 Hook 后的真实收件，以及 ZCode 未选中聊天、旧 Stop 超期时的当前 idle 观察。最新真实 running → 回执终态 → idle 往返使用已选中的 ZCode 测试聊天；未选中 running 和侧栏未渲染目标的覆盖来自隔离 headless 夹具，不能混写为真实桌面验收。
 
@@ -125,3 +125,17 @@ an unrendered target. The isolated browser verifies one native selection and
 offline/remote/ambiguous targets, changed roots and missing busy-navigation
 authorization. A known renderer context replacement permits a fresh observation
 of the original target, never a repeated selection or unchecked text input.
+
+Delivery reconnects once if the initial renderer attachment or fixed composer
+observation times out, before any selection, journal or input. The refreshed
+renderer ID must uniquely match the original; the retry budget is shared across
+targets. Selection, priority operations and submissions are never replayed by
+this recovery. Regression tests cover repeated timeouts, changed/missing/duplicate
+renderer IDs, handshake recovery and the non-replay boundary after selection.
+
+When a complete online ZCode task has no activity overlay, a separately owned
+sessions-index subscription reads current phase and pending counts. The isolated
+browser covers live phases, pending interactions, event/ACK ordering, identity
+and schema failures, timeout and late-ACK cleanup. It checks that a desktop-owned
+subscription remains intact. These fixtures do not establish compatibility with
+every desktop version or reliability under every concurrent workload.

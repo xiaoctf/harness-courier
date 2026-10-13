@@ -109,8 +109,8 @@ Cua Driver 来自 [trycua/cua](https://github.com/trycua/cua)，是外部依赖�
 
 依赖和第三方许可边界见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)，贡献检查见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
-当前源码增加持久队列、有限重试、有时限的锁等待、忙碌聊天切换、原生插队及可选强制策略、漏 Hook 收件兼容和运行状态查询，包含 220 项回归。发送异步受理后查询 `dispatch_queue`、原 ID 的真实回执及接收会话状态。本机 Kimi Code 1.0.4 / ZCode 3.14.4 已验证真实往返、运行中优先消费和状态观察，包含 ZCode 未选中聊天且旧 Stop 超期时的当前空闲状态；只使用一个 Codex 发起环境，多个独立发送方并发与跨版本、跨机器验收仍待完成。旧 `v0.1.0-preview` Release 下载包不包含此次升级，请使用当前 `main` 源码；每次提交的实际 CI 结果见 [Actions](https://github.com/xiaoctf/harness-courier/actions)。见 [派发与插队](docs/dispatch-and-priority.md)。
+当前源码增加持久队列、有限重试、有时限的锁等待、忙碌聊天切换、原生插队及可选强制策略、漏 Hook 收件兼容和运行状态查询，包含 242 项回归。发送异步受理后查询 `dispatch_queue`、原 ID 的真实回执及接收会话状态。本机 Kimi Code 1.0.4 / ZCode 3.14.4 已验证真实往返、运行中优先消费和状态观察，包含 ZCode 未选中聊天且旧 Stop 超期时的当前空闲状态；只使用一个 Codex 发起环境，多个独立发送方并发与跨版本、跨机器验收仍待完成。旧 `v0.1.0-preview` Release 下载包不包含此次升级，请使用当前 `main` 源码；每次提交的实际 CI 结果见 [Actions](https://github.com/xiaoctf/harness-courier/actions)。见 [派发与插队](docs/dispatch-and-priority.md)。
 
 派发默认原生插队并允许切换忙碌聊天；仅管理员未开启 `force_priority` 时，显式 `priority=false` 才使用普通排队。开启后入队和投递均覆盖 false，草稿与身份保护仍生效。
 
-本轮可靠性更新在写入前校验 MCP 参数类型，真实回执优先于历史投递错误，并限制连接恢复次数。ZCode 可通过核验的工作目录与会话查询切换到侧栏未显示的绑定聊天，输入前再次核验 composer；本机 ZCode 3.14.4 已实测，未知版本接口仍拒绝投递。不会自动重发耗尽的旧消息。Kimi 状态查询仍需要可核验的已渲染目标，间歇性 renderer 超时仍可能发生。
+本轮可靠性更新在写入前校验 MCP 参数类型，真实回执优先于历史投递错误，并限制连接恢复次数。ZCode 可通过核验的工作目录与会话查询切换到侧栏未显示的绑定聊天，输入前再次核验 composer；本机 ZCode 3.14.4 已实测，未知版本接口仍拒绝投递。Kimi Code 1.0.4 的状态查询可直接读取精确会话元数据，不依赖目标显示在侧栏，并区分目标不存在、已归档与当前轮次状态。ZCode 工作区后端未运行会明确报告原因。不会自动重发耗尽的旧消息；间歇性 renderer 超时仍可能发生。

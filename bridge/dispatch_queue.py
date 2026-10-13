@@ -62,6 +62,11 @@ def queue_status(box, message_id):
             "duplicate_prevented",
             "retry_safe",
             "reason",
+            "error_code",
+            "failure_stage",
+            "operation",
+            "elapsed_ms",
+            "read_reconnects",
         )
         if key in delivery
     }
@@ -241,7 +246,19 @@ def _retryable(delivery):
     # Drafts, attachments, ambiguous identities, journals and changed bindings hold.
     if delivery.get("retry_safe") is not True:
         return False
+    code = delivery.get("error_code")
+    if code is not None:
+        return code in (
+            "transport_timeout",
+            "composer_unavailable_or_ambiguous",
+            "current_conversation_generating",
+        )
+    # Older workers still return text. Routing metadata is not a failure:
+    # draft_empty=true must not be mistaken for an existing draft guard.
     reason = delivery.get("reason", "")
+    if not isinstance(reason, str):
+        return False
+    reason = reason.partition(" | route=")[0]
     return any(
         token in reason
         for token in (
