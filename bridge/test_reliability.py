@@ -190,7 +190,15 @@ class ReliabilityTests(unittest.TestCase):
             db.execute(
                 "UPDATE dispatch_jobs SET state='working' WHERE message_id=?", (mid,)
             )
+        # The interrupted retry may have crossed the input boundary after the
+        # earlier safe failure. A fresh journal must override that stale proof.
+        directory = self.root / "data/background-delivery"
+        directory.mkdir(parents=True)
+        (directory / (mid + ".json")).write_text('{"phase":"input_attempt"}')
         queue.recover_working(self.box)
+        self.assertNotIn(
+            "retry_safe", queue.queue_status(self.box, mid)["last_delivery"]
+        )
         result = queue.enqueue(self.box, mid, start=False)
         self.assertEqual(result["dispatch_queue"]["state"], "held")
 

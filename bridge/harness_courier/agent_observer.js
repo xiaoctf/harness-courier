@@ -95,10 +95,27 @@ async function(request) {
 
   async function observeZCode() {
     const unknown = reason => ({verified: false, turn_state: 'unknown', reason});
-    const workspace = request.workspace_path;
+    // Hook cwd is an execution directory, not necessarily the task workspace.
+    // Resolve only the exact ID's native route; the controller must confirm it.
+    function workspaceRoute() {
+      const suffix = ':' + request.sid;
+      const keys = all('li[data-task-item-key]').map(row => row.getAttribute('data-task-item-key'))
+        .filter(key => key.endsWith(suffix));
+      if (keys.length > 1) return {error: 'workspace_route_ambiguous'};
+      return {path: keys.length === 1 ? keys[0].slice(0, -suffix.length) : request.workspace_path,
+        source: keys.length === 1 ? 'native_sidebar_exact_session' : 'registered_cwd'};
+    }
+    const route = workspaceRoute();
+    if (route.error) return unknown(route.error);
+    const workspace = route.path;
     if (typeof workspace !== 'string' || !/^[A-Za-z]:[\\/]/.test(workspace)) {
       return unknown('workspace_identity_unavailable');
     }
+    const workspaceEvidence = {registered_workspace_path: request.workspace_path, workspace_route: route.source};
+    const routeChanged = () => {
+      const fresh = workspaceRoute();
+      return !!fresh.error || fresh.path !== workspace || fresh.source !== route.source;
+    };
     // ZCode 3.14.4 exposes its window Host Controller through service context.
     // Only that one service is read; use its supported metadata-list query.
     // Task state comes from the live controller, never cached React task props.
@@ -139,6 +156,7 @@ async function(request) {
       const answer = await boundedQuery(controller.listTaskList({kind: 'timeline', workspaceScopes: [{workspacePath: workspace}], sortBy: 'updated'}));
       if (answer === null) return unknown('controller_timeout');
       if (currentRoot?.stateNode?.current !== currentRoot) return unknown('controller_root_changed');
+      if (routeChanged()) return unknown('workspace_route_changed');
       if (!answer || !Array.isArray(answer.items) || answer.hasMore !== false || answer.items.length > 10000) {
         return unknown('controller_index_incomplete');
       }
@@ -173,6 +191,7 @@ async function(request) {
         if (!['running', 'waiting'].includes(item.liveStatus) || phase[0] !== 'running') return unknown('native_activity_conflict');
       } else if (item.liveStatus !== phase[1]) return unknown('native_activity_conflict');
       return {
+        ...workspaceEvidence,
         verified: true, turn_state: turn, session_id: request.sid, workspace_path: workspace,
         source_availability: 'online', phase: activity.phase, last_activity_at: activity.lastActivityAt,
         has_background_work: activity.hasBackgroundWork,
@@ -235,6 +254,7 @@ async function(request) {
           signal = new Promise(resolve => { wake = resolve; });
         }
         if (currentRoot?.stateNode?.current !== currentRoot) return unknown('controller_root_changed');
+        if (routeChanged()) return unknown('workspace_route_changed');
         const frame = envelope.frame, snapshot = frame?.payload?.snapshot;
         if (frame?.subscriptionId !== subscriptionId || frame.topic !== topic || frame.payload?.kind !== 'snapshot' ||
             snapshot?.protocolVersion !== 1 || snapshot.workspaceId !== workspace || snapshot.logEpoch !== ack.logEpoch ||
@@ -265,17 +285,19 @@ async function(request) {
         if ((turn === 'waiting_for_input' || turn === 'approval_requested') && states[live.phase] !== 'running') {
           return unknown('native_activity_conflict');
         }
-        return {verified: true, turn_state: turn, session_id: request.sid, workspace_path: workspace,
+        return {...workspaceEvidence, verified: true, turn_state: turn, session_id: request.sid, workspace_path: workspace,
           source_availability: 'online', observation_source: 'sessions_index', phase: live.phase,
           last_activity_at: live.lastActivityAt, has_background_work: live.hasBackgroundWork,
           permission_count: pending?.permissionCount || 0, user_input_count: pending?.userInputCount || 0};
       } catch (error) {
+        if (currentRoot?.stateNode?.current !== currentRoot) return unknown('controller_root_changed');
+        if (routeChanged()) return unknown('workspace_route_changed');
         // The installed Host's existing-only path reports this fixed error
         // when the workspace has no runtime client. Do not start it to probe.
         const message = typeof error?.message === 'string' ? error.message : '';
         if (message.length <= 1000 && message.endsWith('ZCode Agent runtime is not running.')) {
           return {...unknown('runtime_not_running'), runtime_availability: 'not_running',
-            session_id: request.sid, workspace_path: workspace};
+            session_id: request.sid, workspace_path: workspace, ...workspaceEvidence};
         }
         return unknown('runtime_index_query_failed');
       } finally {

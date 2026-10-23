@@ -604,6 +604,45 @@ class TransportTimeoutTests(unittest.TestCase):
         self.client.socket.recv.assert_called_once()
         self.assertNotIn("PRIVATE", str(caught.exception))
 
+    def test_disconnections_have_bounded_errors_and_do_not_replay_commands(self):
+        from unittest.mock import Mock
+
+        from websocket import WebSocketConnectionClosedException
+
+        for where, error in (
+            ("send", BrokenPipeError("PRIVATE")),
+            ("recv", ConnectionResetError("PRIVATE")),
+            ("recv", WebSocketConnectionClosedException("PRIVATE")),
+        ):
+            with self.subTest(where=where, error=type(error).__name__):
+                self.client.socket = Mock()
+                getattr(self.client.socket, where).side_effect = error
+                with self.assertRaisesRegex(
+                    WebSocketConnectionClosedException,
+                    "renderer_operation observe disconnected",
+                ) as caught:
+                    self.client.evaluate("observe", BINDING, "PRIVATE_MARKER")
+                self.assertNotIn("PRIVATE", str(caught.exception))
+                self.client.socket.send.assert_called_once()
+                if where == "send":
+                    self.client.socket.recv.assert_not_called()
+                else:
+                    self.client.socket.recv.assert_called_once()
+
+    def test_closed_handshake_is_sanitized_without_implicit_retry(self):
+        from websocket import WebSocketConnectionClosedException
+
+        target = {"webSocketDebuggerUrl": "ws://127.0.0.1:49372/devtools/page/fixture"}
+        with patch(
+            "websocket.create_connection", side_effect=ConnectionAbortedError("PRIVATE")
+        ) as connect:
+            with self.assertRaisesRegex(
+                WebSocketConnectionClosedException, "websocket_connect disconnected"
+            ) as caught:
+                self.client.attach(target)
+        self.assertNotIn("PRIVATE", str(caught.exception))
+        connect.assert_called_once()
+
     def test_post_input_timeout_retains_unsafe_retry_guard(self):
         from websocket import WebSocketTimeoutException
 

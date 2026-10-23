@@ -29,6 +29,10 @@ For ZCode, a live controller's pending interaction counts supersede an old
 PermissionRequest: an already answered request must not leave the agent stuck
 in `approval_requested`.
 `last_hook`, event/progress ages, and their revision expose evidence freshness.
+Concurrent Hook processes can commit out of order. The latest locally observed
+event and each event timestamp are monotonic: a delayed older Stop cannot replace
+a newer prompt or progress event. This does not establish ordering inside the
+harness before its Hook starts, or prove that independent jobs stopped.
 This observer retains only event names, session identifiers and local observation
 times; it does not retain tool arguments, transcript paths, assistant messages,
 or permission payloads. These identifiers are local user data and must not be
@@ -193,3 +197,19 @@ turn a heartbeat into a duplicate dispatch of an ACKed task.
 
 Hook semantics: [Kimi Hooks](https://www.kimi.com/code/docs/en/kimi-code-cli/customization/hooks.html),
 [ZCode Hooks](https://zcode.z.ai/en/docs/hooks).
+
+ZCode Hook `cwd` may be an execution subdirectory rather than the task workspace.
+When the exact session ID has one visible native sidebar route, the adapter uses
+that route only after the current controller confirms the same local task and
+workspace. It rechecks the route after asynchronous reads; duplicates, changed
+routes, remote identities and unverifiable sources remain guarded. The response
+keeps `registered_workspace_path` and `workspace_route`; a confirmed difference
+raises `registration_workspace_mismatch` without rewriting registrations or bindings.
+If neither a usable exact route nor a correct registered workspace is available,
+state remains unknown; no title matching, parent-directory guessing or GUI fallback
+is performed by a status query.
+
+Held/exhausted dispatches without receiver ACK appear in `blocked_dispatches` and
+raise `dispatch_blocked`, even when the turn is idle or unknown. A wait on that
+original message returns `attention_required` rather than silently timing out.
+Receiver ACK/results supersede old dispatch failures.

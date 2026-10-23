@@ -75,6 +75,7 @@ def process(box: Mailbox, harness: str, payload: dict) -> tuple[dict, int]:
             message_id,
             limit=1,
             include_acknowledged=False,
+            queued_only=message_id is None,
         )
     except BridgeError as exc:
         return blocked(harness, str(exc))

@@ -45,13 +45,22 @@ def record_event(box: Any, harness: str, session_id: str, event: str) -> None:
         ).fetchone():
             return
         db.execute(SCHEMA)
+        # Hooks use independent processes. Preserve observation order even if
+        # an earlier event waits for SQLite after a newer one has committed.
+        # MAX(a, b) is NULL if either operand is NULL; COALESCE keeps the known
+        # timestamp when that event type has only been observed on one side.
         db.execute(
             """INSERT INTO agent_activity VALUES(?,?,?,?,?,?,?,1)
             ON CONFLICT(harness,session_id) DO UPDATE SET
-              last_event=excluded.last_event, event_at=excluded.event_at,
-              last_submit_at=COALESCE(excluded.last_submit_at, agent_activity.last_submit_at),
-              last_progress_at=COALESCE(excluded.last_progress_at, agent_activity.last_progress_at),
-              last_stop_at=COALESCE(excluded.last_stop_at, agent_activity.last_stop_at),
+              last_event=CASE WHEN excluded.event_at >= agent_activity.event_at
+                THEN excluded.last_event ELSE agent_activity.last_event END,
+              event_at=MAX(excluded.event_at, agent_activity.event_at),
+              last_submit_at=COALESCE(MAX(excluded.last_submit_at, agent_activity.last_submit_at),
+                excluded.last_submit_at, agent_activity.last_submit_at),
+              last_progress_at=COALESCE(MAX(excluded.last_progress_at, agent_activity.last_progress_at),
+                excluded.last_progress_at, agent_activity.last_progress_at),
+              last_stop_at=COALESCE(MAX(excluded.last_stop_at, agent_activity.last_stop_at),
+                excluded.last_stop_at, agent_activity.last_stop_at),
               revision=agent_activity.revision+1""",
             (
                 harness,
@@ -102,7 +111,7 @@ def probe_native(client: Any, binding: dict) -> dict:
 def probe_target(binding: dict) -> dict:
     """Observe the unique verified renderer without navigating to the target."""
     from cdp_delivery import CdpClient
-    from websocket import WebSocketTimeoutException
+    from delivery_diagnostics import READ_TRANSPORT_ERRORS
 
     stage = "endpoint"
     connection_attempts = 0
@@ -114,7 +123,7 @@ def probe_target(binding: dict) -> dict:
             if len(targets) != 1:
                 return {"available": False, "reason": "renderer_not_unique"}
             # This path contains only the fixed read-only activity observer.
-            # Reconnect once after a handshake OR observation socket timeout.
+            # Reconnect once after a handshake or read timeout/disconnection.
             # Share one retry budget, never retry any delivery operation, and
             # retain unknown after both attempts fail. Returned schema/identity
             # failures are observations, not permission to try other targets.
@@ -127,9 +136,25 @@ def probe_target(binding: dict) -> dict:
                     observation_attempts += 1
                     value = probe_native(client, binding)
                     break
-                except WebSocketTimeoutException:
+                except READ_TRANSPORT_ERRORS:
                     if attempt == 1:
                         raise
+                    original_id = targets[0].get("id")
+                    stage = "renderer_revalidation"
+                    refreshed = client.targets()
+                    if (
+                        not isinstance(original_id, str)
+                        or not original_id
+                        or len(refreshed) != 1
+                        or refreshed[0].get("id") != original_id
+                    ):
+                        return {
+                            "available": False,
+                            "reason": "renderer_changed_during_reconnect",
+                            "connection_attempts": connection_attempts,
+                            "observation_attempts": observation_attempts,
+                        }
+                    targets = refreshed
             # An old adapter must not silently turn its delivery probe into idle.
             if value.get("activity_probe") is not True:
                 return {"available": False, "reason": "activity_adapter_unavailable"}
@@ -226,6 +251,22 @@ def inspect_target(
             if has_outbox
             else []
         )
+        blocked_dispatches = (
+            [
+                dict(row)
+                for row in db.execute(
+                    "SELECT m.id,m.state AS receiver_state,j.state AS dispatch_state,"
+                    "j.attempts,j.updated_at,j.last_error FROM messages m "
+                    "JOIN dispatch_jobs j ON j.message_id=m.id "
+                    "WHERE m.harness=? AND m.session_id=? "
+                    "AND m.state IN ('queued','delivered') "
+                    "AND j.state IN ('held','exhausted') ORDER BY j.updated_at DESC LIMIT 10",
+                    (binding["harness"], binding["session_id"]),
+                )
+            ]
+            if has_outbox
+            else []
+        )
     native = (
         (probe or probe_target)(
             {**binding, "workspace_path": peer["cwd"] if peer else None}
@@ -244,6 +285,15 @@ def inspect_target(
     )
     session = native.get("session_activity")
     session = session if isinstance(session, dict) else {}
+    registered_workspace = peer["cwd"] if peer else None
+    # A Hook's cwd can move into a task subdirectory. Only the adapter's exact
+    # native sidebar route, confirmed by the controller, can override that hint.
+    workspace_matches = session.get("workspace_path") == registered_workspace or (
+        session.get("workspace_route") == "native_sidebar_exact_session"
+        and session.get("registered_workspace_path") == registered_workspace
+        and isinstance(session.get("workspace_path"), str)
+        and re.match(r"^[A-Za-z]:[\\/]", session["workspace_path"]) is not None
+    )
     native_session = (
         native.get("available")
         and session.get("verified") is True
@@ -251,7 +301,7 @@ def inspect_target(
         and session.get("source_availability") == "online"
         and (
             binding["harness"] == "zcode"
-            and session.get("workspace_path") == (peer["cwd"] if peer else None)
+            and workspace_matches
             or binding["harness"] == "kimi"
             and session.get("observation_source") == "kimi_session_api"
         )
@@ -276,7 +326,7 @@ def inspect_target(
         and session.get("reason") == "runtime_not_running"
         and session.get("runtime_availability") == "not_running"
         and session.get("session_id") == binding["session_id"]
-        and session.get("workspace_path") == (peer["cwd"] if peer else None)
+        and workspace_matches
     )
     conflict = (
         selected
@@ -289,6 +339,8 @@ def inspect_target(
     controller_conflict = native.get("available") and session.get("reason") in (
         "native_activity_conflict",
         "target_source_offline",
+        "workspace_route_ambiguous",
+        "workspace_route_changed",
     )
     native_issue = (
         "native_source_offline"
@@ -349,11 +401,13 @@ def inspect_target(
     )
     unfinished = counts.get("delivered", 0) + counts.get("acknowledged", 0)
     attention = []
+    if blocked_dispatches:
+        attention.append("dispatch_blocked")
     if native_missing:
         attention.append("bound_session_not_found")
     if native_session and session.get("archived") is True:
         attention.append("bound_session_archived")
-    if native_session and binding["harness"] == "kimi" and peer:
+    if native_session and peer:
         # Hook cwd can be the desktop launch directory; Kimi session IDs are
         # global, so report that mismatch without discarding exact live state.
         def path_key(value):
@@ -399,6 +453,8 @@ def inspect_target(
             next_action = "The bound session is absent from the complete workspace index. Verify whether it was deleted or moved; never retarget by title."
     if native_session and session.get("archived") is True:
         next_action = "The exact bound Kimi session is archived. Restore it explicitly before dispatch, or explicitly bind a chosen replacement; old receipts are retained."
+    if blocked_dispatches:
+        next_action += " Dispatch is blocked: inspect blocked_dispatches and original IDs; reconnecting alone does not rearm held/exhausted work."
     return {
         "alias": binding["alias"],
         "harness": binding["harness"],
@@ -424,6 +480,7 @@ def inspect_target(
         "message_counts": counts,
         "latest_message": dict(latest) if latest else None,
         "unfinished_messages": pending,
+        "blocked_dispatches": blocked_dispatches,
         "submitted_unreceived_count": len(submitted),
         "submitted_unreceived_messages": submitted[:10],
         "attention": attention,
@@ -533,7 +590,11 @@ def wait_with_activity(
                 and time.time() - outbox["updated_at"] >= 10
             )
             if (
-                (gap and agent["turn_state"] in ("idle", "stop_observed"))
+                (
+                    message["state"] in ("queued", "delivered")
+                    and outbox.get("state") in ("held", "exhausted")
+                )
+                or (gap and agent["turn_state"] in ("idle", "stop_observed"))
                 or (unreceived and agent["turn_state"] == "idle")
                 or agent["turn_state"] in ("approval_requested", "waiting_for_input")
             ):

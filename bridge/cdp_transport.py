@@ -16,7 +16,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlsplit
 from urllib.request import ProxyHandler, build_opener
 
-from delivery_diagnostics import DeliveryTrace
+from delivery_diagnostics import DISCONNECT_ERRORS, DeliveryTrace
 from harness_courier.app_registry import APPS, verified_port
 from harness_courier.errors import DriverError
 from wake_protocol import wake_text
@@ -98,6 +98,10 @@ class CdpClient:
             raise websocket.WebSocketTimeoutException(
                 "DevTools websocket_connect timed out"
             ) from None
+        except DISCONNECT_ERRORS:
+            raise websocket.WebSocketConnectionClosedException(
+                "DevTools websocket_connect disconnected"
+            ) from None
 
     def call(self, method, params):
         # This adapter never admits browser activation, navigation, OS input, or arbitrary callers.
@@ -136,6 +140,10 @@ class CdpClient:
             raise websocket.WebSocketTimeoutException(
                 f"DevTools command_send {method} timed out"
             ) from None
+        except DISCONNECT_ERRORS:
+            raise websocket.WebSocketConnectionClosedException(
+                f"DevTools command_send {method} disconnected"
+            ) from None
         while time.monotonic() < deadline:
             # Unrelated events must not reset the command's total deadline.
             self.socket.settimeout(max(0.001, min(5, deadline - time.monotonic())))
@@ -144,6 +152,10 @@ class CdpClient:
             except websocket.WebSocketTimeoutException:
                 raise websocket.WebSocketTimeoutException(
                     f"DevTools command_response {method} timed out"
+                ) from None
+            except DISCONNECT_ERRORS:
+                raise websocket.WebSocketConnectionClosedException(
+                    f"DevTools command_response {method} disconnected"
                 ) from None
             if response.get("id") != self.sequence:
                 continue
@@ -192,6 +204,13 @@ class CdpClient:
             )
             raise websocket.WebSocketTimeoutException(
                 f"DevTools renderer_operation {operation_name} timed out"
+            ) from None
+        except websocket.WebSocketConnectionClosedException:
+            operation_name = (
+                operation if re.fullmatch(r"[a-z_]{1,64}", operation) else "unknown"
+            )
+            raise websocket.WebSocketConnectionClosedException(
+                f"DevTools renderer_operation {operation_name} disconnected"
             ) from None
         if result.get("exceptionDetails"):
             raise DriverError("Background renderer operation failed")
@@ -486,6 +505,11 @@ def _deliver_background(
                 )
             else:
                 require(client.evaluate("focus", binding, marker), "focused")
+            # Reads and document focus can yield while the receiver ACKs or an
+            # alias is rebound. Revalidate after those calls, before any input
+            # journal, typing or priority action can create a redundant wake.
+            if dispatch_guard is not None and not dispatch_guard():
+                return {"submitted": False, "skipped": "receiver_already_acknowledged"}
             if recovering and not staged:
                 check_unreceived()
                 record = {

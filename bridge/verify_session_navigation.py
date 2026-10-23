@@ -1,5 +1,6 @@
 """Native navigation guard scenarios for verify_cdp_fixture's isolated browser."""
 
+from agent_activity import probe_native
 from session_navigation import select_zcode_session
 
 
@@ -97,8 +98,65 @@ def verify(client):
         assert result.get("selected") is True
         assert js("window.navFixture.chosen") == [["E:/fixture", "sess_fixture"]]
         assert js("editor.textContent") == ""
-        return {"rejected_scenarios": len(cases) + 1, "verified_selection_once": True}
+        # Hook cwd can be a nested execution directory, while the native row
+        # still belongs to the root workspace. Query and select only its ID.
+        reset()
+        js("document.querySelector('li[data-task-item-key]').style.display=''")
+        nested = {**binding, "workspace_path": "E:/fixture/runs/nested"}
+        observed = probe_native(client, nested)["session_activity"]
+        assert observed["verified"] and observed["workspace_path"] == "E:/fixture", (
+            observed
+        )
+        assert observed["registered_workspace_path"] == nested["workspace_path"]
+        assert observed["workspace_route"] == "native_sidebar_exact_session"
+        assert js("window.navFixture.chosen.length") == 0
+        assert (
+            js("editor.closest('[data-session-id]').getAttribute('data-session-id')")
+            == "different_fixture"
+        )
+        result = select_zcode_session(client, nested, allow_busy_navigation=True)
+        assert result.get("selected") is True, result
+        assert js("window.navFixture.chosen") == [["E:/fixture", "sess_fixture"]]
+        for setup, expected in (
+            (
+                "let row=document.querySelector('li[data-task-item-key]').cloneNode(true);row.setAttribute('data-task-item-key','E:/other:sess_fixture');row.dataset.routeDuplicate='';document.body.appendChild(row)",
+                "native_navigation_workspace_ambiguous",
+            ),
+            (
+                "controller.listTaskList=async q=>{const r=await window.navFixture.list(q);document.querySelector('li[data-task-item-key]').setAttribute('data-task-item-key','E:/other:sess_fixture');return r}",
+                "native_navigation_context_changed",
+            ),
+        ):
+            reset()
+            js("(()=>{" + setup + ";})()")
+            observed = probe_native(client, nested)["session_activity"]
+            expected_reason = (
+                "workspace_route_ambiguous"
+                if expected == "native_navigation_workspace_ambiguous"
+                else "workspace_route_changed"
+            )
+            assert observed.get("reason") == expected_reason, observed
+            assert js("window.navFixture.chosen.length") == 0
+            js(
+                "document.querySelector('[data-route-duplicate]')?.remove();document.querySelector('li[data-task-item-key]').setAttribute('data-task-item-key','E:/fixture:sess_fixture')"
+            )
+            reset()
+            js("(()=>{" + setup + ";})()")
+            result = select_zcode_session(client, nested, allow_busy_navigation=True)
+            assert result.get("error") == expected, result
+            assert js("window.navFixture.chosen.length") == 0
+            js(
+                "document.querySelector('[data-route-duplicate]')?.remove();document.querySelector('li[data-task-item-key]').setAttribute('data-task-item-key','E:/fixture:sess_fixture')"
+            )
+        return {
+            "rejected_scenarios": len(cases) + 3,
+            "verified_selection_once": True,
+            "hook_cwd_mismatch_resolved_without_input": True,
+        }
     finally:
+        js(
+            "document.querySelector('[data-route-duplicate]')?.remove();document.querySelector('li[data-task-item-key]').setAttribute('data-task-item-key','E:/fixture:sess_fixture')"
+        )
         reset()
         js(
             "fixtureRoot.child=window.navFixture.child;controller.listTaskList=window.navFixture.list;editor.closest('[data-session-id]').setAttribute('data-session-id','sess_fixture');void 0"

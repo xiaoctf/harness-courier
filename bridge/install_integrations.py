@@ -132,34 +132,31 @@ def build_changes(home, python):
     kimi_config = home / ".kimi-code" / "config.toml"
     raw = kimi_config.read_bytes() if kimi_config.exists() else b""
     old_object = tomllib.loads(raw.decode("utf-8-sig"))
-    if START.encode() in raw:
-        new = raw
-        command = subprocess.list2cmdline(
-            [str(python), str(ROOT / "receiver_hook.py"), "--harness", "kimi"]
-        )
-        missing = []
-        for event in sorted(PASSIVE_EVENTS):
-            matches = [
-                hook
-                for hook in old_object.get("hooks", [])
-                if hook.get("event") == event and hook.get("command") == command
-            ]
-            if matches and any(
-                hook != {"event": event, "command": command, "timeout": 5}
-                for hook in matches
-            ):
-                raise ValueError("Unmanaged Kimi activity Hook conflict")
-            if not matches:
-                missing.append(event)
-        if missing:
-            addition = (
-                kimi_hook_section(python, missing)
-                .replace(START, "# BEGIN HARNESS COURIER ACTIVITY")
-                .replace(END, "# END HARNESS COURIER ACTIVITY")
-            )
-            new += addition.encode("utf-8")
-    else:
-        new = raw + kimi_hook_section(python).encode("utf-8")
+    new = raw
+    command = subprocess.list2cmdline(
+        [str(python), str(ROOT / "receiver_hook.py"), "--harness", "kimi"]
+    )
+    missing = []
+    for event in (
+        "SessionStart",
+        "UserPromptSubmit",
+        "SessionEnd",
+        *sorted(PASSIVE_EVENTS),
+    ):
+        matches = [
+            hook
+            for hook in old_object.get("hooks", [])
+            if hook.get("event") == event and hook.get("command") == command
+        ]
+        if matches and any(
+            hook != {"event": event, "command": command, "timeout": 5}
+            for hook in matches
+        ):
+            raise ValueError("Unmanaged Kimi activity Hook conflict")
+        if not matches:
+            missing.append(event)
+    if missing:
+        new += kimi_hook_section(python, missing).encode("utf-8")
     new_object = tomllib.loads(new.decode("utf-8-sig"))
     assert all(new_object[k] == v for k, v in old_object.items() if k != "hooks")
     assert new_object.get("hooks", [])[

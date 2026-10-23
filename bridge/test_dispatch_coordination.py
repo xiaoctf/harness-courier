@@ -488,6 +488,58 @@ class PriorityDeliveryTests(unittest.TestCase):
         self.assertEqual(result["skipped"], "receiver_already_acknowledged")
         self.assertEqual(self.client.commands, [])
 
+    def test_ack_during_priority_read_or_focus_cancels_without_input(self):
+        for transition in ("observe", "focus"):
+            with self.subTest(transition=transition):
+                pending = True
+                reads = 0
+
+                def evaluate(op, *args):
+                    nonlocal pending, reads
+                    if op == "observe":
+                        reads += 1
+                    if op == transition and (op == "focus" or reads == 2):
+                        pending = False
+                    return self.evaluate(op, *args)
+
+                with patch.object(self.client, "evaluate", side_effect=evaluate):
+                    result = cdp.deliver_background(
+                        BINDING,
+                        MID,
+                        lambda _: self.client,
+                        priority=True,
+                        dispatch_guard=lambda: pending,
+                    )
+                self.assertEqual(result["skipped"], "receiver_already_acknowledged")
+                self.assertEqual(self.client.commands, [])
+                self.assertFalse(
+                    (cdp.ROOT / "data/background-delivery" / f"{MID}.json").exists()
+                )
+
+    def test_binding_change_during_focus_blocks_input(self):
+        changed = False
+
+        def evaluate(op, *args):
+            nonlocal changed
+            if op == "focus":
+                changed = True
+            return self.evaluate(op, *args)
+
+        def guard():
+            if changed:
+                raise DriverError("Binding changed while waiting for dispatch")
+            return True
+
+        with patch.object(self.client, "evaluate", side_effect=evaluate):
+            with self.assertRaisesRegex(DriverError, "Binding changed"):
+                cdp.deliver_background(
+                    BINDING, MID, lambda _: self.client, dispatch_guard=guard
+                )
+        self.assertEqual(self.client.commands, [])
+        self.assertFalse(
+            (cdp.ROOT / "data/background-delivery" / f"{MID}.json").exists()
+        )
+
     def test_priority_preserves_existing_draft(self):
         self.client.draft = True
         with self.assertRaisesRegex(DriverError, "existing_draft"):

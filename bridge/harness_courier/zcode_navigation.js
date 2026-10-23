@@ -2,6 +2,15 @@
 // No OS focus, transcript reads, runtime creation, Stop, or text input.
 async function(request) {
   const visible = e => !!e && e.getClientRects().length > 0;
+  function workspaceRoute() {
+    const suffix = ':' + request.sid;
+    const keys = [...document.querySelectorAll('li[data-task-item-key]')].filter(visible)
+      .map(row => row.getAttribute('data-task-item-key')).filter(key => key.endsWith(suffix));
+    if (keys.length > 1) return {error: 'native_navigation_workspace_ambiguous'};
+    const path = keys.length === 1 ? keys[0].slice(0, -suffix.length) : request.workspace_path;
+    if (typeof path !== 'string' || !/^[A-Za-z]:[\\/]/.test(path)) return {error: 'native_navigation_identity_unavailable'};
+    return {path, source: keys.length === 1 ? 'native_sidebar_exact_session' : 'registered_cwd'};
+  }
   function composer() {
     const inputs = [...new Set([...document.querySelectorAll('[data-lexical-editor="true"][contenteditable="true"], [data-testid="chat-input"][contenteditable="true"]')].filter(visible))];
     if (inputs.length !== 1) return {error: 'composer_unavailable_or_ambiguous'};
@@ -50,26 +59,30 @@ async function(request) {
       typeof request.sid !== 'string' || !/^[A-Za-z0-9_.:-]{1,160}$/.test(request.sid)) return {error: 'native_navigation_identity_unavailable'};
   const before = composer();
   if (before.error) return before;
+  const route = workspaceRoute();
+  if (route.error) return route;
   const context = currentRoot(before.editor);
   const choose = context && selector(context.root);
   if (!choose || typeof context.service?.listTaskList !== 'function') return {error: 'native_navigation_adapter_unavailable'};
   let timer;
   try {
     const answer = await Promise.race([
-      context.service.listTaskList({kind: 'timeline', workspaceScopes: [{workspacePath: request.workspace_path}], sortBy: 'updated'}),
+      context.service.listTaskList({kind: 'timeline', workspaceScopes: [{workspacePath: route.path}], sortBy: 'updated'}),
       new Promise(resolve => { timer = setTimeout(() => resolve(null), 3000); }),
     ]);
     if (!answer || !Array.isArray(answer.items) || answer.hasMore !== false || answer.items.length > 10000) return {error: 'native_navigation_index_unavailable'};
-    const targets = answer.items.filter(item => item.taskId === request.sid && item.workspacePath === request.workspace_path && !item.workspaceIdentity && !item.remoteSessionId);
+    const targets = answer.items.filter(item => item.taskId === request.sid && item.workspacePath === route.path && !item.workspaceIdentity && !item.remoteSessionId);
     if (targets.length !== 1 || targets[0].sourceAvailability !== 'online') return {error: 'native_navigation_target_unverified'};
     // The metadata read can yield. Recheck live root, handler, current route,
     // drafts and busy authorization immediately before the one selection.
     const after = composer();
     if (after.error) return after;
     const fresh = currentRoot(after.editor);
+    const freshRoute = workspaceRoute();
     if (after.editor !== before.editor || after.sid !== before.sid ||
+        freshRoute.error || freshRoute.path !== route.path || freshRoute.source !== route.source ||
         fresh?.root !== context.root || fresh?.service !== context.service || selector(fresh.root) !== choose) return {error: 'native_navigation_context_changed'};
-    choose(request.workspace_path, request.sid);
+    choose(route.path, request.sid);
     return {selected: true, selection_method: 'native_exact_session'};
   } catch (_) {
     return {error: 'native_navigation_failed'};

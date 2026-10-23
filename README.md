@@ -168,7 +168,7 @@ Adapt the templates to the project and place them in the client's supported inst
 
 ## Limitations
 
-`0.1.0` is a preview. The current source has 242 regression tests. Windows CI is configured for Python 3.11 and 3.13, Ruff and package builds; see [Actions](https://github.com/xiaoctf/harness-courier/actions) for each commit's actual result. Automated tests and isolated browser fixtures do not establish compatibility with every desktop application version.
+`0.1.0` is a preview. The current source has 268 regression tests. Windows CI is configured for Python 3.11 and 3.13, Ruff and package builds; see [Actions](https://github.com/xiaoctf/harness-courier/actions) for each commit's actual result. Automated tests and isolated browser fixtures do not establish compatibility with every desktop application version.
 
 - Receipts are stored in message records and queried by the sender. There is no complete scheduler that automatically wakes the original Codex chat with a result.
 - Explicit dispatch requests use a durable outbox and one delivery worker per mailbox. Priority jobs go first; jobs of the same priority use FIFO order when ready. Transient pre-input failures have bounded retries, while drafts and uncertain submissions are held for inspection. Real multi-project desktop concurrency still needs acceptance testing.

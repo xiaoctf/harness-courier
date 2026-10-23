@@ -9,7 +9,7 @@ from unittest.mock import Mock, patch
 import cdp_delivery as cdp
 from cu_client import DriverError
 from test_cdp_delivery import BINDING, MID, FakeClient
-from websocket import WebSocketTimeoutException
+from websocket import WebSocketConnectionClosedException, WebSocketTimeoutException
 
 
 class InitialObservationTests(unittest.TestCase):
@@ -49,6 +49,54 @@ class InitialObservationTests(unittest.TestCase):
         self.assertEqual(self.client.submits, 1)
         self.assertEqual(
             [method for method, _ in self.client.commands].count("Input.insertText"), 1
+        )
+
+    def test_closed_read_reconnects_same_renderer_then_inserts_once(self):
+        original = self.client.evaluate
+        failed = False
+
+        def evaluate(op, *args):
+            nonlocal failed
+            if op == "observe" and not failed:
+                failed = True
+                raise WebSocketConnectionClosedException("PRIVATE")
+            return original(op, *args)
+
+        self.client.evaluate = Mock(side_effect=evaluate)
+        self.client.targets = Mock(return_value=[{"id": "0"}])
+        self.assertTrue(self.deliver()["submitted"])
+        self.assertEqual(self.client.targets.call_count, 2)
+        self.assertEqual(self.client.submits, 1)
+        self.assertEqual(
+            [method for method, _ in self.client.commands].count("Input.insertText"), 1
+        )
+
+    def test_disconnect_and_timeout_share_one_read_reconnect_budget(self):
+        self.client.evaluate = Mock(
+            side_effect=[
+                WebSocketTimeoutException(),
+                WebSocketConnectionClosedException(),
+            ]
+        )
+        with self.assertRaises(WebSocketConnectionClosedException) as caught:
+            self.deliver()
+        self.assertEqual(caught.exception.error_code, "transport_disconnected")
+        self.assertEqual(caught.exception.read_reconnects, 1)
+        self.assertTrue(caught.exception.retry_safe)
+        self.assertEqual(self.client.evaluate.call_count, 2)
+        self.assertEqual(self.client.commands, [])
+
+    def test_disconnect_after_input_does_not_reconnect_or_resubmit(self):
+        self.client.call = Mock(side_effect=WebSocketConnectionClosedException())
+        self.client.targets = Mock(return_value=[{"id": "0"}])
+        with self.assertRaises(WebSocketConnectionClosedException) as caught:
+            self.deliver()
+        self.assertEqual(caught.exception.error_code, "transport_disconnected")
+        self.assertFalse(caught.exception.retry_safe)
+        self.client.targets.assert_called_once()
+        self.client.call.assert_called_once()
+        self.assertTrue(
+            (self.root / "data/background-delivery" / f"{MID}.json").exists()
         )
 
     def test_second_read_timeout_stops_without_input_or_journal(self):

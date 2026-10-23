@@ -6,6 +6,15 @@ import re
 import time
 
 from cu_client import DriverError
+from websocket import WebSocketConnectionClosedException, WebSocketTimeoutException
+
+DISCONNECT_ERRORS = (
+    WebSocketConnectionClosedException,
+    ConnectionResetError,
+    ConnectionAbortedError,
+    BrokenPipeError,
+)
+READ_TRANSPORT_ERRORS = (WebSocketTimeoutException, *DISCONNECT_ERRORS)
 
 
 def failure_details(exc):
@@ -37,8 +46,6 @@ class DeliveryTrace:
         self.input_started = False
 
     def _run(self, operation, function, *args):
-        from websocket import WebSocketTimeoutException
-
         start = time.perf_counter()
         try:
             return function(*args)
@@ -49,6 +56,8 @@ class DeliveryTrace:
             exc.read_reconnects = self.read_reconnects
             if isinstance(exc, WebSocketTimeoutException):
                 exc.error_code = "transport_timeout"
+            elif isinstance(exc, DISCONNECT_ERRORS):
+                exc.error_code = "transport_disconnected"
             raise
 
     def targets(self):
@@ -67,8 +76,6 @@ class DeliveryTrace:
         return self._run(method, self.client.call, method, params)
 
     def observe_before_input(self, binding, marker, *, stage, target=None):
-        from websocket import WebSocketTimeoutException
-
         if self.input_started:
             raise DriverError("Read reconnect refused after input")
         self.stage = stage
@@ -76,7 +83,7 @@ class DeliveryTrace:
             if target is not None:
                 self.attach(target)
             return self.evaluate("observe", binding, marker)
-        except WebSocketTimeoutException:
+        except READ_TRANSPORT_ERRORS:
             if self.read_reconnects >= 1:
                 raise
             self.read_reconnects += 1

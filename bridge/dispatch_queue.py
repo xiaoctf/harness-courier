@@ -89,7 +89,70 @@ def queue_status(box, message_id):
         result["next_action"] = (
             "Inspect the original receipt and delivery journal before any same-ID recovery."
         )
+    if not confirmed and result["state"] in ("held", "exhausted"):
+        result["recovery"] = (
+            "explicit_same_id_interrupted_check"
+            if result["last_error"] == INTERRUPTED
+            else "explicit_same_id_pre_input_check"
+            if delivery.get("retry_safe") is True
+            else "input_outcome_requires_review"
+        )
+        if result["last_error"] == INTERRUPTED:
+            result["next_action"] = (
+                "Explicit same-ID dispatch checks the lock, frozen recipient and all input journals before rearming; it never clears a journal."
+            )
     return result
+
+
+INTERRUPTED = "Worker interrupted; inspect original receipt/journal before retry"
+
+
+def recover_interrupted_request(box, message_id):
+    """Explicit same-ID recovery only; never clear an input/submit journal."""
+    status = queue_status(box, message_id)
+    if not status or status["state"] != "held" or status["last_error"] != INTERRUPTED:
+        return
+    from desktop_delivery import desktop_lock
+
+    # All supported transports reserve a journal before input under this lock.
+    # Acquire it before the DB lock, matching the delivery lock ordering.
+    with desktop_lock(), box.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute(
+            "SELECT m.*,j.state AS job_state,j.last_error FROM messages m "
+            "JOIN dispatch_jobs j ON j.message_id=m.id WHERE m.id=?",
+            (message_id,),
+        ).fetchone()
+        if not row or row["state"] not in ("queued", "delivered"):
+            return
+        if row["job_state"] != "held" or row["last_error"] != INTERRUPTED:
+            return
+        binding = db.execute(
+            "SELECT * FROM bindings WHERE alias=?", (row["alias"],)
+        ).fetchone()
+        if (
+            not binding
+            or any(binding[k] != row[k] for k in ("harness", "session_id"))
+            or binding["revision"] != row["binding_revision"]
+        ):
+            raise ValueError(
+                "Binding changed; interrupted message will not be retargeted"
+            )
+        journals = ROOT / "data" / "background-delivery"
+        if any(journals.glob(message_id + "*.json")):
+            return
+        db.execute(
+            "UPDATE dispatch_jobs SET delivery=? WHERE message_id=? AND state='held'",
+            (
+                json.dumps(
+                    {
+                        "retry_safe": True,
+                        "recovery_evidence": "exclusive_no_input_journal",
+                    }
+                ),
+                message_id,
+            ),
+        )
 
 
 def enqueue(box, message_id, *, priority=True, allow_busy_navigation=True, start=True):
@@ -113,6 +176,7 @@ def enqueue(box, message_id, *, priority=True, allow_busy_navigation=True, start
         message["binding_revision"],
     ):
         raise ValueError("Binding changed; queue will not retarget the message")
+    recover_interrupted_request(box, message_id)
     initialize(box)
     stamp = time.time()
     journal = ROOT / "data" / "background-delivery" / (message_id + ".json")
@@ -250,6 +314,7 @@ def _retryable(delivery):
     if code is not None:
         return code in (
             "transport_timeout",
+            "transport_disconnected",
             "composer_unavailable_or_ambiguous",
             "current_conversation_generating",
         )

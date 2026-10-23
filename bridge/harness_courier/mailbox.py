@@ -284,6 +284,7 @@ class Mailbox:
         limit: int = 10,
         *,
         include_acknowledged: bool = True,
+        queued_only: bool = False,
     ) -> list[dict[str, Any]]:
         """Fetch only this session's messages and mark queued items delivered."""
         valid_id(session_id)
@@ -315,6 +316,8 @@ class Mailbox:
                     if include_acknowledged
                     else "('queued','delivered')"
                 )
+                if queued_only:
+                    states = "('queued')"
                 rows = db.execute(
                     """SELECT * FROM messages WHERE harness=? AND session_id=?
                                   AND state IN """

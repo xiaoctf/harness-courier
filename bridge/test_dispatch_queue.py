@@ -183,6 +183,51 @@ class QueueTests(unittest.TestCase):
         queue.run_one(self.box, deliver=self.success)
         self.assertEqual(queue.queue_status(self.box, mid)["attempts"], 2)
 
+    def test_disconnected_read_retries_but_disconnected_input_is_held(self):
+        from delivery_diagnostics import failure_details
+        from websocket import WebSocketConnectionClosedException
+
+        for after_input in (False, True):
+            with (
+                self.subTest(after_input=after_input),
+                tempfile.TemporaryDirectory() as td,
+            ):
+                mid = self.job()
+                client = FakeClient("kimi")
+                failing = "call" if after_input else "evaluate"
+                setattr(
+                    client,
+                    failing,
+                    Mock(side_effect=WebSocketConnectionClosedException()),
+                )
+                with (
+                    patch.object(cdp, "ROOT", Path(td)),
+                    patch(
+                        "desktop_delivery.desktop_lock",
+                        __import__("contextlib").nullcontext,
+                    ),
+                ):
+                    with self.assertRaises(
+                        WebSocketConnectionClosedException
+                    ) as caught:
+                        cdp.deliver_background(BINDING, mid, lambda _: client)
+                    failure = failure_details(caught.exception)
+                    queue.run_one(
+                        self.box,
+                        deliver=lambda message_id, **opts: {
+                            **self.box.status(message_id),
+                            "desktop_delivery": failure,
+                        },
+                    )
+                state = queue.queue_status(self.box, mid)
+                self.assertEqual(state["state"], "held" if after_input else "pending")
+                if not after_input:
+                    self.due()
+                    queue.run_one(self.box, deliver=self.success)
+                    self.assertEqual(
+                        queue.queue_status(self.box, mid)["state"], "submitted"
+                    )
+
     def test_busy_route_metadata_retries_same_id_without_enabling_navigation(self):
         mid = self.job(allow_busy_navigation=False)
         reason = (

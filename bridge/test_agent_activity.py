@@ -1,5 +1,6 @@
 """Activity uncertainty, passive Hook safety and recipient scoping regression."""
 
+import contextlib
 import json
 import tempfile
 import unittest
@@ -313,6 +314,61 @@ class ActivityTests(unittest.TestCase):
         self.binding = self.box.binding("test")
         self.assertEqual(self.query(native)["turn_state"], "unknown")
 
+    def test_zcode_native_workspace_outlives_hook_execution_cwd(self):
+        native = self.zcode_native(
+            workspace_path="E:/project",
+            registered_workspace_path="E:/fixture",
+            workspace_route="native_sidebar_exact_session",
+        )
+        value = self.query(native)
+        self.assertEqual(value["turn_state"], "idle")
+        self.assertEqual(value["turn_evidence"], "native_exact_session_controller")
+        self.assertIn("registration_workspace_mismatch", value["attention"])
+        peer = next(
+            p for p in self.box.peers()["peers"] if p["session_id"] == "zcode-A"
+        )
+        self.assertEqual(peer["cwd"], "E:/fixture")
+
+    def test_workspace_override_requires_complete_native_route_evidence(self):
+        for changed in (
+            {"workspace_route": "registered_cwd"},
+            {"registered_workspace_path": "E:/other"},
+            {"workspace_path": "relative/path"},
+            {"session_id": "other"},
+            {"verified": False},
+        ):
+            with self.subTest(changed=changed):
+                native = self.zcode_native(
+                    workspace_path="E:/project",
+                    registered_workspace_path="E:/fixture",
+                    workspace_route="native_sidebar_exact_session",
+                )
+                native["session_activity"].update(changed)
+                self.assertEqual(self.query(native)["turn_state"], "unknown")
+
+    def test_workspace_route_conflict_cannot_fall_back_to_selected_composer(self):
+        for reason in ("workspace_route_ambiguous", "workspace_route_changed"):
+            native = self.zcode_native(verified=False, reason=reason)
+            native.update(
+                target_selected=True, composer_verified=True, generating=False
+            )
+            result = self.query(native)
+            self.assertEqual(result["turn_state"], "unknown")
+            self.assertIn("native_state_conflict", result["attention"])
+
+    def test_resolved_workspace_runtime_absence_keeps_specific_reason(self):
+        native = self.zcode_native(
+            verified=False,
+            workspace_path="E:/project",
+            registered_workspace_path="E:/fixture",
+            workspace_route="native_sidebar_exact_session",
+            reason="runtime_not_running",
+            runtime_availability="not_running",
+        )
+        result = self.query(native)
+        self.assertEqual(result["runtime_availability"], "not_running")
+        self.assertIn("workspace_runtime_not_running", result["attention"])
+
     def test_runtime_not_running_overrides_stale_composer_and_hook(self):
         native = self.zcode_native(
             verified=False,
@@ -428,6 +484,53 @@ class ActivityTests(unittest.TestCase):
         self.assertEqual(state["turn_state"], "unknown")
         self.assertLess(state["last_progress_age_seconds"], 2)
         self.assertEqual(state["last_hook"]["revision"], 1)
+
+    def test_delayed_old_stop_cannot_overwrite_a_newer_prompt(self):
+        connect = self.box.connect
+        interleaved = False
+
+        @contextlib.contextmanager
+        def delayed_connect():
+            nonlocal interleaved
+            if not interleaved:
+                interleaved = True
+                with (
+                    patch.object(self.box, "connect", connect),
+                    patch("agent_activity.time.time", return_value=200),
+                ):
+                    record_event(self.box, "kimi", "kimi-A", "UserPromptSubmit")
+            with connect() as db:
+                yield db
+
+        with (
+            patch.object(self.box, "connect", delayed_connect),
+            patch("agent_activity.time.time", return_value=100),
+        ):
+            record_event(self.box, "kimi", "kimi-A", "Stop")
+        state = self.query(clock=lambda: 201)
+        self.assertEqual(state["turn_state"], "unknown")
+        self.assertEqual(state["last_hook"]["last_event"], "UserPromptSubmit")
+        self.assertEqual(state["last_hook"]["event_at"], 200)
+        self.assertEqual(state["last_hook"]["last_stop_at"], 100)
+        self.assertEqual(state["last_hook"]["last_submit_at"], 200)
+        self.assertEqual(state["last_hook"]["last_progress_at"], 200)
+
+    def test_out_of_order_events_preserve_each_latest_observation(self):
+        for stamp, event in (
+            (300, "Stop"),
+            (200, "PostToolUse"),
+            (150, "UserPromptSubmit"),
+            (100, "UserPromptSubmit"),
+            (50, "Stop"),
+        ):
+            with patch("agent_activity.time.time", return_value=stamp):
+                record_event(self.box, "kimi", "kimi-A", event)
+        event = self.query(clock=lambda: 301)["last_hook"]
+        self.assertEqual((event["last_event"], event["event_at"]), ("Stop", 300))
+        self.assertEqual(event["last_stop_at"], 300)
+        self.assertEqual(event["last_progress_at"], 200)
+        self.assertEqual(event["last_submit_at"], 150)
+        self.assertEqual(event["revision"], 5)
 
     def test_old_permission_event_is_not_current_wait_proof(self):
         record_event(self.box, "kimi", "kimi-A", "PermissionRequest")
@@ -599,6 +702,48 @@ class NativeConnectionTests(unittest.TestCase):
         self.assertEqual(result["connection_attempts"], 2)
         self.assertEqual(result["observation_attempts"], 1)
         self.probe.assert_called_once()
+
+    def test_closed_connection_read_recovers_once(self):
+        from websocket import WebSocketConnectionClosedException
+
+        self.probe.side_effect = [
+            WebSocketConnectionClosedException("PRIVATE"),
+            {"activity_probe": True},
+        ]
+        result = probe_target(self.binding)
+        self.assertTrue(result["available"])
+        self.assertEqual(result["observation_attempts"], 2)
+        self.assertEqual(self.client.attach.call_count, 2)
+        self.client.call.assert_not_called()
+
+    def test_disconnect_and_timeout_have_one_shared_native_retry(self):
+        from websocket import (
+            WebSocketConnectionClosedException,
+            WebSocketTimeoutException,
+        )
+
+        self.client.attach.side_effect = [WebSocketConnectionClosedException(), None]
+        self.probe.side_effect = WebSocketTimeoutException()
+        result = probe_target(self.binding)
+        self.assertFalse(result["available"])
+        self.assertEqual(result["connection_attempts"], 2)
+        self.assertEqual(result["observation_attempts"], 1)
+        self.probe.assert_called_once()
+
+    def test_native_reconnect_rejects_a_changed_or_ambiguous_renderer(self):
+        from websocket import WebSocketConnectionClosedException
+
+        for refreshed in ([], [{"id": "replacement"}], [{"id": "fixture"}] * 2):
+            with self.subTest(refreshed=refreshed):
+                self.client.attach.reset_mock(side_effect=True)
+                self.client.targets.side_effect = [[{"id": "fixture"}], refreshed]
+                self.probe.reset_mock(side_effect=True)
+                self.probe.side_effect = WebSocketConnectionClosedException()
+                result = probe_target(self.binding)
+                self.assertFalse(result["available"])
+                self.assertEqual(result["reason"], "renderer_changed_during_reconnect")
+                self.client.attach.assert_called_once()
+                self.probe.assert_called_once()
 
     def test_completed_unknown_observation_is_not_retried(self):
         self.probe.return_value = {
